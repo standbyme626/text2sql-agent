@@ -73,31 +73,31 @@ Text-to-SQL 的 demo 半天能写完，但它离「能给别人用」差一段�
 
 | 平面 | 职责 | 入口 |
 |---|---|---|
-| 策略 | 配置快照、次数上限钳制、鉴权开关 | `backend/app/config.py` |
-| 执行 | Agent 编排、上下文组装、自纠正循环 | `backend/app/agent.py` |
-| 治理 | 只读闸门、拒答护栏、限流 | `backend/app/db.py`、`guard.py`、`auth.py` |
-| 数据 | 50 表 schema、向量索引、会话与 few-shot | `backend/app/schema_index.py`、`store.py` |
-| 观测 | SSE 阶段事件、`/api/status`、错误脱敏 | `backend/app/main.py` |
+| 策略 | 配置快照、次数上限钳制、鉴权开关 | `config.py` |
+| 执行 | Agent 编排、上下文组装、自纠正循环 | `agent.py` |
+| 治理 | 只读闸门、拒答护栏、限流 | `db.py` / `guard.py` / `auth.py` |
+| 数据 | 50 表 schema、向量索引、会话与 few-shot | `schema_index.py` / `store.py` |
+| 观测 | SSE 阶段事件、`/api/status`、错误脱敏 | `main.py` |
 | 交互 | 会话、SQL 编辑重跑、图表、移动端 | `frontend/src/` |
 
 ---
 
 ## 2. 核心特性
 
-| 模块 | 能力 | 代码入口 |
-|---|---|---|
-| **向量选表** | 问题向量化 → Top-6 表；中文关键词融合打分兜底 | `schema_index.py::search` / `keyword_score` |
-| **外键闭包补表** | Top-6 里缺 JOIN 父表时按 `fks` 补全，最多 `FK_EXPAND_MAX` 张 | `schema_index.py::expand_with_fks` |
-| **上下文组装** | DDL + 中文列说明 + 枚举值 + 样例行 + 业务口径 + few-shot + 交替历史 | `schema_index.py::prompt_context`、`agent.py::build_messages` |
-| **SQL 生成** | 只允许一条 SELECT；无法回答时走 `【拒答】原因\|建议` 协议 | `llm.py::chat`、`llm.py::extract_sql` |
-| **只读闸门** | 剥离字符串字面量后校验关键字/注释/多语句；强制顶层 LIMIT；5s 超时 | `db.py::clean_sql`、`db.py::_top_level_limit` |
-| **ReAct 自纠正** | 报错 / 0 行 / 缺表缺列作为 Observation 回灌；单轮 LLM 硬预算 | `agent.py::run_agent` |
-| **自动解读** | 结论 + 追问合并为 1 次轻量调用，只喂前 8 行；0 行/截断走专用提示 | `agent.py::build_insight` |
-| **拒答引导** | 规则前置拦截无关/越权/注入；模糊问题给可点击的正确问法 | `guard.py::check`、`guard.py::parse_refusal` |
-| **会话还原** | 完整回答结构化落库（`payload`），切走再切回表格/图表/结论都在 | `store.py::add_answer`、`store.py::get_history` |
-| **鉴权** | 中文登录页 + HMAC token，签名绑定密码版本；登录失败按 IP 限流 | `auth.py::make_token`、`auth.py::rate_ok` |
-| **流式输出** | SSE：`session/stage/tables/sql/result/retry/insight/guidance/error/done` | `main.py::query`、`agent.py` |
-| **前端** | Vue 3 单页，无 UI 框架，图表用原生 SVG 手绘 | `frontend/src/components/ResultPanel.vue` |
+| 能力 | 代码入口 |
+|---|---|
+| **向量选表** — 问题向量化 → Top-6 表；中文关键词融合打分兜底 | `schema_index.py::search`、`keyword_score` |
+| **外键闭包补表** — 缺 JOIN 父表时按 `fks` 补全，最多 `FK_EXPAND_MAX` 张 | `schema_index.py::expand_with_fks` |
+| **上下文组装** — DDL + 中文列说明 + 枚举值 + 样例行 + 业务口径 + few-shot + 交替历史 | `prompt_context`、`build_messages` |
+| **SQL 生成** — 只允许一条 SELECT；无法回答时走 `【拒答】原因｜建议` 协议 | `llm.py::chat`、`extract_sql` |
+| **只读闸门** — 剥离字面量后校验关键字/注释/多语句；强制顶层 LIMIT；5s 超时 | `db.py::clean_sql`、`_top_level_limit` |
+| **ReAct 自纠正** — 报错 / 0 行 / 缺表缺列作为 Observation 回灌；单轮 LLM 硬预算 | `agent.py::run_agent` |
+| **自动解读** — 结论 + 追问合并为 1 次轻量调用，只喂前 8 行；0 行/截断走专用提示 | `agent.py::build_insight` |
+| **拒答引导** — 规则前置拦截无关/越权/注入；模糊问题给可点击的正确问法 | `guard.py::check`、`parse_refusal` |
+| **会话还原** — 完整回答结构化落库（`payload`），切走再切回表格/图表/结论都在 | `store.py::add_answer`、`get_history` |
+| **鉴权** — 中文登录页 + HMAC token，签名绑定密码版本；登录失败按 IP 限流 | `auth.py::make_token`、`rate_ok` |
+| **流式输出** — SSE 十种事件：`session` / `stage` / `tables` / `sql` / `result` / `retry` / `insight` / `guidance` / `error` / `done` | `main.py::query`、`agent.py` |
+| **前端** — Vue 3 单页，无 UI 框架，图表用原生 SVG 手绘 | `frontend/src/components/` |
 
 ---
 
