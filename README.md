@@ -150,7 +150,7 @@ Text-to-SQL 的 demo 半天能写完，但它离「能给别人用」差一段�
 **公网部署时走应用层登录**，不依赖 nginx Basic（原生 401 弹窗在手机和预览面板里常不出现）：
 
 <p align="center">
-  <img src="docs/screenshots/login.png" width="800" alt="应用层登录页">
+  <img src="docs/screenshots/login.png" width="640" alt="应用层登录页">
 </p>
 
 <p align="center"><sub>登录后 24 小时内免输；token 绑定密码版本，改密即失效</sub></p>
