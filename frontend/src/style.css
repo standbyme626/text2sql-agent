@@ -345,3 +345,25 @@ tbody tr:hover { background: #f8fafc; }
 @media (max-width: 860px) {
   .toast { bottom: calc(76px + env(safe-area-inset-bottom)); max-width: 88vw; text-align: center; }
 }
+
+/* ---------------- 2026 Agent 轨迹 ---------------- */
+.agent-trace { font-size: 12px; color: var(--muted); }
+.agent-trace summary {
+  cursor: pointer; color: var(--primary); font-weight: 600;
+  list-style: none; user-select: none;
+}
+.agent-trace summary::-webkit-details-marker { display: none; }
+.agent-trace summary::before { content: '▸ '; }
+.agent-trace[open] summary::before { content: '▾ '; }
+.trace-id { margin-left: 8px; font-weight: 400; color: var(--muted); font-family: ui-monospace, monospace; }
+.trace-row {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  padding: 6px 0; border-bottom: 1px dashed var(--border);
+}
+.trace-row:last-child { border-bottom: none; }
+.trace-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); flex: none; }
+.trace-dot.fail { background: #ef4444; }
+.trace-row b { color: var(--text); font-family: ui-monospace, monospace; }
+.trace-ms { color: var(--muted); }
+.trace-args { color: var(--muted); font-family: ui-monospace, monospace; font-size: 11px; word-break: break-all; }
+.trace-err { color: #ef4444; font-size: 11px; }

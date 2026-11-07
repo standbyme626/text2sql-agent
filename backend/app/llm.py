@@ -13,6 +13,7 @@ import re
 
 import httpx
 
+from . import tracing
 from .config import settings
 
 FENCE = re.compile(r"```(?:sql)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
@@ -28,6 +29,10 @@ LANGUAGE_RULE = (
 
 class LLMTransientError(RuntimeError):
     """限流 / 超时 / 网络抖动：应直接告知用户稍后重试，不要重写 SQL。"""
+
+
+class LLMToolUnsupported(LLMTransientError):
+    """模型/网关不支持 OpenAI tools 参数：回退到 workflow 模式。"""
 
 
 def with_language_rule(messages: list[dict]) -> list[dict]:
@@ -68,6 +73,8 @@ def extract_sql(text: str) -> str:
     m2 = SQL_START.search(candidate)
     if m2 and not candidate.lower().startswith(("select", "with")):
         candidate = candidate[m2.start():]
+    if not SQL_START.search(candidate):
+        return ""
     return candidate.strip()
 
 
@@ -118,14 +125,63 @@ def mock_sql(question: str) -> str:
     return f"```sql\n{sql}\n```"
 
 
-async def chat(messages: list[dict], max_tokens: int | None = None) -> str:
-    """返回模型正文；失败抛出异常，由上层转成 SSE 错误事件。"""
+def _estimate_tokens(messages: list[dict], extra: str = "") -> int:
+    chars = sum(len(str(m.get("content") or "")) for m in messages) + len(extra)
+    return max(1, chars // 4)
+
+
+def parse_tool_json(text: str) -> list[dict]:
+    """兼容不支持原生 tools 的模型：从正文里解析 {"tool":..,"arguments":..}。"""
+    if not text:
+        return []
+    candidates = []
+    fence = FENCE.search(text)
+    if fence:
+        candidates.append(fence.group(1))
+    start, end = text.find("{"), text.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(text[start:end + 1])
+    for raw in candidates:
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(data, dict) and (data.get("tool") or data.get("name")):
+            name = data.get("tool") or data.get("name")
+            args = data.get("arguments") or data.get("args") or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except ValueError:
+                    args = {"_raw": args}
+            if not isinstance(args, dict):
+                args = {}
+            return [{"id": "json_call", "name": str(name), "arguments": args}]
+    return []
+
+
+def _openai_tools(tools: list[dict] | None) -> list[dict] | None:
+    return tools or None
+
+
+async def _completion(messages: list[dict], max_tokens: int | None = None,
+                      tools: list[dict] | None = None) -> dict:
+    """统一 completion 入口：返回 content / tool_calls / usage。"""
     if settings.MOCK_MODE:
-        await asyncio.sleep(0.15)
+        await asyncio.sleep(0.05)
         user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
         if "解读" in user or "总结" in user:
-            return "本次查询已返回结果，可按时间或分类维度进一步下钻。"
-        return mock_sql(user)
+            content = "本次查询已返回结果，可按时间或分类维度进一步下钻。"
+        else:
+            content = mock_sql(user)
+        p = _estimate_tokens(messages)
+        c = _estimate_tokens([], content)
+        tracing.add_usage(p, c)
+        with tracing.span("llm.chat", model="mock", mock=True) as sp:
+            sp.update(prompt_tokens=p, completion_tokens=c)
+        return {"content": content, "tool_calls": [],
+                "usage": {"prompt_tokens": p, "completion_tokens": c}}
+
     if not settings.LLM_API_KEY:
         raise RuntimeError("未配置 MODELSCOPE_API_KEY（魔搭 API key）")
 
@@ -141,26 +197,57 @@ async def chat(messages: list[dict], max_tokens: int | None = None) -> str:
         "max_tokens": max_tokens or settings.LLM_MAX_TOKENS,
         "stream": False,
     }
+    if _openai_tools(tools):
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+
     last = "大模型暂时不可用，请稍后重试"
     for attempt in range(3):
         try:
-            async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
-                r = await client.post(url, headers=headers, json=payload)
-            if r.status_code == 429:
-                last = "魔搭 429 限流，请稍后再试"
-                await asyncio.sleep(2 * (attempt + 1))
-                continue
-            if r.status_code != 200:
-                # 上游响应正文只写服务端日志，不回显给客户端
-                raise LLMTransientError(f"魔搭接口 HTTP {r.status_code}")
-            data = r.json()
-            msg = data["choices"][0]["message"]
-            content = (msg.get("content") or "").strip()
-            if not content:
-                content = (msg.get("reasoning_content") or "").strip()
-            if not content:
-                raise LLMTransientError("模型返回内容为空")
-            return content
+            with tracing.span("llm.chat", model=settings.LLM_MODEL,
+                              tools=bool(tools)) as sp:
+                async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
+                    r = await client.post(url, headers=headers, json=payload)
+                if r.status_code == 429:
+                    sp.update(ok=False, status=429)
+                    last = "魔搭 429 限流，请稍后再试"
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+                if r.status_code != 200:
+                    body = (r.text or "").lower()
+                    sp.update(ok=False, status=r.status_code)
+                    if tools and r.status_code == 400 and (
+                            "tool" in body or "function" in body):
+                        raise LLMToolUnsupported("上游不支持 tools/function calling")
+                    raise LLMTransientError(f"魔搭接口 HTTP {r.status_code}")
+                data = r.json()
+                msg = data["choices"][0]["message"]
+                content = (msg.get("content") or "").strip()
+                if not content:
+                    content = (msg.get("reasoning_content") or "").strip()
+                calls = []
+                for tc in msg.get("tool_calls") or []:
+                    fn = tc.get("function") or {}
+                    args = fn.get("arguments") or "{}"
+                    try:
+                        parsed = json.loads(args) if isinstance(args, str) else args
+                    except ValueError:
+                        parsed = {"_raw": args}
+                    calls.append({"id": tc.get("id") or "call",
+                                  "name": fn.get("name") or "",
+                                  "arguments": parsed if isinstance(parsed, dict) else {}})
+                usage = data.get("usage") or {}
+                pt = int(usage.get("prompt_tokens") or _estimate_tokens(messages))
+                ct = int(usage.get("completion_tokens") or _estimate_tokens([], content))
+                sp.update(ok=True, prompt_tokens=pt, completion_tokens=ct,
+                          tool_calls=len(calls))
+                tracing.add_usage(pt, ct)
+                if not content and not calls:
+                    raise LLMTransientError("模型返回内容为空")
+                return {"content": content, "tool_calls": calls,
+                        "usage": {"prompt_tokens": pt, "completion_tokens": ct}}
+        except LLMToolUnsupported:
+            raise
         except LLMTransientError as e:
             last = str(e)
             if "HTTP" in last and "429" not in last:
@@ -172,3 +259,14 @@ async def chat(messages: list[dict], max_tokens: int | None = None) -> str:
         except Exception as e:  # noqa: BLE001
             raise LLMTransientError(f"大模型调用异常：{type(e).__name__}") from e
     raise LLMTransientError(last)
+
+
+async def chat(messages: list[dict], max_tokens: int | None = None) -> str:
+    """返回模型正文；失败抛出异常，由上层转成 SSE 错误事件。"""
+    return (await _completion(messages, max_tokens=max_tokens))["content"]
+
+
+async def chat_tools(messages: list[dict], tools: list[dict],
+                     max_tokens: int | None = None) -> dict:
+    """OpenAI tools 调用；不支持时抛 LLMToolUnsupported 供上层回退 workflow。"""
+    return await _completion(messages, max_tokens=max_tokens, tools=tools)

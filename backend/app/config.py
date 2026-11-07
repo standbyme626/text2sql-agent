@@ -95,8 +95,19 @@ class Settings:
     EMB_DIM: int = _clamped("EMB_DIM", 1024, 8, 4096)
     EMB_TIMEOUT: int = _clamped("EMB_TIMEOUT", 60, 5, 180)
 
+    # --- 数据源（默认 SQLite；DATABASE_URL 可切 Postgres）---
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "").strip()
+    SEMANTIC_FILE: str = (os.getenv("SEMANTIC_FILE") or
+                          str(BACKEND_DIR / "semantic" / "metrics.yaml"))
+
     # --- Agent 参数 ---
+    # toolloop = 2026 工具调用循环；workflow = 旧固定流水线（不支持的模型可回退）
+    AGENT_MODE: str = os.getenv("AGENT_MODE", "toolloop").strip().lower()
+    MAX_AGENT_STEPS: int = _clamped("MAX_AGENT_STEPS", 6, 1, 20)
+    MAX_TOOL_SQL: int = _clamped("MAX_TOOL_SQL", 4, 1, 10)
+    TOOL_ROW_PREVIEW: int = _clamped("TOOL_ROW_PREVIEW", 20, 5, 100)
     TOP_K_TABLES: int = _clamped("TOP_K_TABLES", 6, 1, 20)
+    COLUMN_LINK_TOPK: int = _clamped("COLUMN_LINK_TOPK", 8, 2, 40)
     FEWSHOT_K: int = _clamped("FEWSHOT_K", 2, 0, 6)
     MAX_SQL_RETRY: int = _clamped("MAX_SQL_RETRY", 2, 0, 5)
     MAX_RESULT_ROWS: int = _clamped("MAX_RESULT_ROWS", 500, 10, 5000)
@@ -118,6 +129,11 @@ class Settings:
     MAX_QA_HISTORY: int = _clamped("MAX_QA_HISTORY", 400, 50, 10000)
     MAX_BODY_BYTES: int = _clamped("MAX_BODY_BYTES", 1_000_000, 10000, 10_000_000)
     SSE_HEARTBEAT_SEC: int = _clamped("SSE_HEARTBEAT_SEC", 15, 3, 60)
+
+    # --- 可观测性 / 记忆 ---
+    TRACE_ENABLED: bool = _bool("TRACE_ENABLED", True)
+    TRACE_RECENT: int = _clamped("TRACE_RECENT", 200, 20, 2000)
+    MEMORY_ENABLED: bool = _bool("MEMORY_ENABLED", True)
 
     # --- 开关 ---
     MOCK_MODE: bool = _bool("MOCK_MODE", False)   # 不调用任何外部 API，用于本地自测
@@ -141,6 +157,15 @@ class Settings:
     @property
     def app_db_path(self) -> Path:
         return DATA_DIR / "app.db"
+
+    @property
+    def db_dialect(self) -> str:
+        return "postgres" if self.DATABASE_URL.startswith(
+            ("postgres://", "postgresql://")) else "sqlite"
+
+    @property
+    def is_postgres(self) -> bool:
+        return self.db_dialect == "postgres"
 
     @property
     def auth_enabled(self) -> bool:

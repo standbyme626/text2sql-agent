@@ -132,7 +132,7 @@ SSE 生成器在客户端断开时会收到 `GeneratorExit`（属于 `BaseExcept
 
 ## 3. 自测矩阵
 
-`backend/scripts/selftest.py` 共 90 项断言，跑在**独立临时数据目录**上，
+`backend/scripts/selftest.py` 共 109 项断言，跑在**独立临时数据目录**上，
 不碰开发库、不消耗真实 API 额度（`MOCK_MODE`），结束自动清理。
 
 | 组 | 覆盖内容 |
@@ -155,9 +155,49 @@ MOCK_MODE=true python backend/scripts/selftest.py
 
 - **单用户为主**：鉴权是「一个账号 + HMAC token」，没有 RBAC。多人共用时靠会话 owner 隔离，
   但额度与审计是按实例算的。
-- **SQLite**：适合十万行级演示库。要接生产库需要换成 Postgres/MySQL 驱动，
-  只读闸门的正则规则也要按方言调整（`PRAGMA`、`ATTACH` 是 SQLite 专有）。
+- **SQLite / Postgres**：默认 SQLite 演示库；已提供 Postgres 只读连接器与 schema 内省脚本。
+  MySQL / BigQuery / Snowflake 仍需补方言与连接器。
 - **50 张表的规模假设**：向量选表在几百张表时仍可用，上千张表需要分层检索
   （先选业务域，再选表），否则 Top-K 会漏表。
 - **不做多语句 / 子查询嵌套优化**：只保证「一条 SELECT 能跑对」，不做执行计划优化。
 - **洞察是单轮生成**：不做多轮反思，复杂归因（同比环比拆解）建议在下钻追问里完成。
+
+---
+
+## 5. v3.0（2026 Agent 架构）追加取舍
+
+### 5.1 为什么从固定流水线改成 tool-calling loop
+
+2024 式 Text-to-SQL 的假设是「一次生成一条 SQL」。真实问数里模型需要先扩表、再试跑、
+看到报错或 0 行后修正，这和 Agent 的工具循环是同一件事。v3.0 把
+`search_schema` / `run_sql` / `list_metrics` 注册成 OpenAI tools，模型自主决定调用顺序；
+`run_sql` 的结果作为 Observation 回灌，模型自己决定重写还是停手。
+
+保留 workflow 作为降级路径：部分 OpenAI 兼容网关会拒绝 `tools` 参数，
+`llm.chat_tools` 捕获 400 后抛 `LLMToolUnsupported`，同一请求内切换固定流水线，
+不向用户暴露「模型不支持」的失败。
+
+### 5.2 为什么语义层不接 dbt / MDL
+
+WrenAI 的 MDL、dbt metrics 需要建模项目、血缘与部署流水线，对一个 50 表演示库是过度工程。
+这里用 YAML 固化「指标表达式 + 有效过滤 + 标准 JOIN + 方言日期函数」，API 可审计，
+prompt 只注入与问题相关的指标；等接入真实数仓时再把 YAML 换成 MDL 导出即可。
+
+### 5.3 为什么列级 linking 不做列向量
+
+50 张表约 500+ 列，列向量建索引会产生数百次 embedding 调用，且每次换库都要重建。
+当前用中文二元组 + 列名精确命中做确定性 linking，零成本、可解释；
+prompt 里每张表只多一行「与问题最相关的列」，不裁剪 DDL，避免模型因缺列而编造。
+
+### 5.4 观测为什么不上 OTel SDK
+
+演示项目不值得引入 collector / exporter 链路。`tracing.py` 直接输出 OTel 语义兼容的
+JSONL（trace_id / span 名称 / 起止偏移 / 属性 / token），需要接 Langfuse 或 Collector 时
+按行转发即可；进程内保留最近 N 条供 `/api/metrics` 算 p50/p95 与工具失败率。
+
+### 5.5 Postgres 的只读边界
+
+`psycopg.connect(options="-c default_transaction_read_only=on -c statement_timeout=...")`
+之外，再执行 `SET TRANSACTION READ ONLY`，并复用同一套 `clean_sql`；
+schema 元数据由 `build_meta_pg.py` 从 `information_schema` + `pg_class` 内省生成，
+不假设表名/列名与 SQLite 演示库一致。

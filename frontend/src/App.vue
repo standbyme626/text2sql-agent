@@ -105,6 +105,21 @@
                 <div class="retry-note" v-for="(r, j) in m.retries" :key="j">自动纠错：{{ r }}</div>
               </div>
 
+              <div class="card-section" v-if="m.steps && m.steps.length">
+                <details class="agent-trace">
+                  <summary>Agent 轨迹（{{ m.steps.length }} 步）
+                    <span class="trace-id" v-if="m.traceId">trace {{ m.traceId }}</span>
+                  </summary>
+                  <div class="trace-row" v-for="(s, j) in m.steps" :key="j">
+                    <span class="trace-dot" :class="{ fail: !s.ok }"></span>
+                    <b>{{ s.tool }}</b>
+                    <span class="trace-ms">{{ Math.round(s.ms) }}ms</span>
+                    <span class="trace-args" v-if="s.args && Object.keys(s.args).length">{{ formatArgs(s.args) }}</span>
+                    <span class="trace-err" v-if="s.error">{{ s.error }}</span>
+                  </div>
+                </details>
+              </div>
+
               <div class="card-section" v-if="m.result">
                 <ResultPanel :result="m.result" :question="userQuestionOf(i)" :insight="m.insight"
                              @followup="ask" @refresh-insight="ins => m.insight = ins" />
@@ -351,6 +366,7 @@ async function loadSession(id) {
         noStage: !!h.guidance,
         tables: detail.length ? detail : names.map(n => ({ name: n, cn: n, score: '' })),
         sql: h.sql || '', attempt: 1,
+        steps: Array.isArray(h.steps) ? h.steps : [], traceId: h.trace_id || '',
         result: h.result || null, insight,
         notice: h.non_chinese ? '该会话原回答为非中文，已隐藏；可点「AI 解读」生成中文结论。'
           : (h.result?.auto_insight === false ? '自动结论已关闭，可点「AI 解读」手动生成。' : ''),
@@ -383,6 +399,10 @@ async function removeSession(id) {
   await loadSessions()
 }
 
+function formatArgs(args) {
+  const parts = Object.entries(args).map(([k, v]) => `${k}=${String(v).slice(0, 60)}`)
+  return parts.join(' · ')
+}
 function userQuestionOf(i) {
   for (let j = i - 1; j >= 0; j--) if (messages.value[j].role === 'user') return messages.value[j].content
   return ''
@@ -409,6 +429,7 @@ async function ask(q) {
     role: 'assistant', stage: '准备中…', stageLog: [], tables: [], sql: '',
     attempt: 1, result: null, insight: null, guidance: null, notice: '',
     noStage: false, restoreFailed: false, error: '', retries: [], done: false,
+    steps: [], traceId: '',
   })
   messages.value.push(m)
   busy.value = true
@@ -423,6 +444,7 @@ async function ask(q) {
       switch (ev.type) {
         case 'session':
           sid.value = ev.session_id
+          m.traceId = ev.trace_id || ''
           syncUrl(ev.session_id)
           break
         case 'stage': m.stage = ev.label; break
@@ -432,6 +454,9 @@ async function ask(q) {
           if (!m.stageLog.includes('生成 SQL')) m.stageLog.push('生成 SQL')
           break
         case 'retry': m.retries.push(ev.error); break
+        case 'step':
+          m.steps.push({ tool: ev.tool, ok: ev.ok, ms: ev.ms || 0, args: ev.args || {}, error: ev.error || '' })
+          break
         case 'guidance':
           m.guidance = ev; m.stage = ''; m.stageLog = []; m.noStage = true
           break
@@ -449,7 +474,11 @@ async function ask(q) {
         case 'insight_disabled': m.notice = ev.message; break
         case 'notice': m.notice = ev.message || ev.text; break
         case 'error': m.error = ev.message; if (ev.sql) m.sql = ev.sql; break
-        case 'done': m.done = true; m.stage = ''; break
+        case 'done':
+          m.done = true
+          m.stage = ''
+          m.traceId = ev.trace_id || m.traceId
+          break
       }
       scroll()
     }, { signal: controller.signal })

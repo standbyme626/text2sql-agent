@@ -30,3 +30,7 @@ class ExplainReq(BaseModel):
     columns: list[str] = Field(default_factory=list, max_length=100)
     rows: list[list[Any]] = Field(default_factory=list, max_length=64)
     truncated: bool = False
+
+
+class MemoryReq(BaseModel):
+    text: str = Field(..., min_length=2, max_length=300)

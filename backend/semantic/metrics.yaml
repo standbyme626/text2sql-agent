@@ -1,0 +1,107 @@
+# 电商演示库受治理指标层（semantic layer）
+# 作用：把「销售额/销量/客单价」等业务口径从 prompt 里的一段硬编码文本，
+# 变成可版本化、可审计、可被 API 查询的 YAML。换库/换方言时只改这里。
+version: 1
+
+business_rules:
+  - 销售额 / GMV / 营收：优先用 orders.pay_amount（实付金额）；按商品拆分时用 order_items.line_total。
+  - 统计有效成交时必须排除 orders.status 为 cancelled、refunded 的订单。
+  - 销量：order_items.quantity 求和；客单价 = 有效订单实付金额 / 订单数。
+  - 金额单位为元，聚合结果用 ROUND(..., 2)；状态值只能用给定「可选值」，不要臆造。
+  - 日期字段是 TEXT(YYYY-MM-DD)；按月份统计必须使用当前方言的日期函数。
+
+metrics:
+  - id: gmv
+    name: 销售额 / GMV
+    synonyms: [销售额, gmv, 营收, 成交额, 交易额, 卖了多少钱]
+    table: orders
+    tables: [orders, order_items]
+    expr: "SUM(orders.pay_amount)"
+    valid_filter: "orders.status NOT IN ('cancelled','refunded')"
+    unit: 元
+    notes: 按商品拆分时改用 SUM(order_items.line_total)。
+    related_columns: [line_total]
+
+  - id: sales_volume
+    name: 销量
+    synonyms: [销量, 卖了多少, 卖出, 热销, 畅销, 卖得最好]
+    table: order_items
+    expr: "SUM(order_items.quantity)"
+    unit: 件
+    notes: 通常按 products.name 或 categories.name 分组。
+
+  - id: order_count
+    name: 订单数
+    synonyms: [订单数, 订单量, 单量, 下单数]
+    table: orders
+    expr: "COUNT(DISTINCT orders.order_id)"
+    valid_filter: "orders.status NOT IN ('cancelled')"
+    unit: 单
+
+  - id: aov
+    name: 客单价
+    synonyms: [客单价, 平均订单金额, 平均每单, 人均消费]
+    table: orders
+    expr: "ROUND(SUM(orders.pay_amount) * 1.0 / COUNT(DISTINCT orders.order_id), 2)"
+    valid_filter: "orders.status NOT IN ('cancelled','refunded')"
+    unit: 元
+
+  - id: customer_count
+    name: 客户数
+    synonyms: [客户数, 用户数, 买家数, 多少人, 新客]
+    table: customers
+    expr: "COUNT(DISTINCT customers.customer_id)"
+    unit: 人
+
+  - id: refund_rate
+    name: 退款率
+    synonyms: [退款率, 退货率, 售后率]
+    table: refunds
+    expr: "ROUND(COUNT(DISTINCT refunds.refund_id) * 1.0 / COUNT(DISTINCT orders.order_id), 4)"
+    unit: 比例
+    notes: refunds JOIN orders ON refunds.order_id = orders.order_id。
+
+  - id: avg_rating
+    name: 平均评分
+    synonyms: [评分, 口碑, 好评, 星级, 评价]
+    table: product_reviews
+    expr: "ROUND(AVG(product_reviews.rating), 2)"
+    unit: 星
+
+  - id: stock_shortage
+    name: 缺货商品数
+    synonyms: [缺货, 补货, 安全库存, 库存预警, 备货]
+    table: inventory
+    expr: "COUNT(DISTINCT inventory.product_id)"
+    valid_filter: "inventory.quantity < inventory.safety_qty"
+    unit: 个
+
+joins:
+  - tables: [orders, order_items]
+    on: "orders.order_id = order_items.order_id"
+  - tables: [order_items, products]
+    on: "order_items.product_id = products.product_id"
+  - tables: [products, categories]
+    on: "products.category_id = categories.category_id"
+  - tables: [products, brands]
+    on: "products.brand_id = brands.brand_id"
+  - tables: [orders, customers]
+    on: "orders.customer_id = customers.customer_id"
+  - tables: [refunds, orders]
+    on: "refunds.order_id = orders.order_id"
+  - tables: [product_reviews, products]
+    on: "product_reviews.product_id = products.product_id"
+  - tables: [inventory, products]
+    on: "inventory.product_id = products.product_id"
+  - tables: [payments, orders]
+    on: "payments.order_id = orders.order_id"
+
+dialects:
+  sqlite:
+    date_month: "strftime('%Y-%m', orders.order_date)"
+    date_day: "date(orders.order_date)"
+    limit: "LIMIT n"
+  postgres:
+    date_month: "date_trunc('month', orders.order_date)"
+    date_day: "orders.order_date::date"
+    limit: "LIMIT n"

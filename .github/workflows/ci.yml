@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend deps
+        run: pip install -r backend/requirements.txt
+
+      - name: Init demo database + mock index
+        env:
+          MOCK_MODE: "true"
+        run: |
+          python backend/scripts/init_db.py
+          python backend/scripts/build_index.py
+
+      - name: Self-test (109 assertions, zero API cost)
+        env:
+          MOCK_MODE: "true"
+        run: python backend/scripts/selftest.py
+
+      - name: Golden eval harness smoke
+        env:
+          MOCK_MODE: "true"
+        run: python backend/scripts/eval.py --mode mock
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm ci --no-audit --no-fund
+          npm run build

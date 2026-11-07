@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 
+from . import semantic
 from .config import settings
 from .embedding import cosine, embed, embed_one, last_error, set_error
 
@@ -98,6 +99,44 @@ class SchemaIndex:
                     "mock": settings.MOCK_MODE}
 
     # ---------- 打分与检索 ----------
+    def column_scores(self, question: str, t: dict) -> list[dict]:
+        """列级 linking：问题与列名/中文说明做中文二元组 + 关键词匹配。
+
+        不做列向量（50 表×十余列会产生数百次 embedding 调用），
+        用确定性的关键词融合补足列级精度，成本为零、可解释。
+        """
+        qg = _grams(question)
+        q_low = (question or "").lower()
+        out = []
+        for c in t.get("columns") or []:
+            text = f'{c.get("cn", "")} {c.get("name", "")}'.lower()
+            hit = len(qg & _grams(text)) if qg else 0
+            score = min(1.0, hit / max(2.0, len(qg) * 0.55))
+            name = str(c.get("name", "")).lower()
+            if name and name in q_low:
+                score += 0.35
+            for token in str(c.get("cn", "")).replace("，", " ").split():
+                if len(token) >= 2 and token in question:
+                    score += 0.15
+            # 语义层联动：问题命中指标同义词时，给该指标表达式里的列加权
+            for m in semantic.metrics():
+                owners = m.get("tables") or [m.get("table")]
+                if t.get("name") not in owners:
+                    continue
+                syn = [str(x).lower() for x in (m.get("synonyms") or [])]
+                if not any(x and x in q_low for x in syn):
+                    continue
+                expr = str(m.get("expr") or "").lower()
+                related = [str(x).lower() for x in (m.get("related_columns") or [])]
+                if name and (name in expr or name in related):
+                    score += 0.45
+                    break
+            if score > 0:
+                out.append({"name": c.get("name"), "cn": c.get("cn"),
+                            "score": round(min(1.0, score), 3)})
+        out.sort(key=lambda x: -x["score"])
+        return out[:settings.COLUMN_LINK_TOPK]
+
     def keyword_score(self, question: str, t: dict) -> float:
         qg = _grams(question)
         if not qg:
@@ -155,6 +194,7 @@ class SchemaIndex:
                 "score": round(float(score), 4),
                 "vector_score": round(float(vs), 4),
                 "keyword_score": round(float(ks), 4),
+                "matched_columns": self.column_scores(question, t),
             })
         out.sort(key=lambda x: -x["score"])
         picked = out[:k]
@@ -175,7 +215,8 @@ class SchemaIndex:
                    default=0.0) >= threshold
 
     # ---------- 给 LLM 的上下文 ----------
-    def prompt_context(self, names: list[str]) -> str:
+    def prompt_context(self, names: list[str],
+                       columns_map: dict[str, list[dict]] | None = None) -> str:
         parts = []
         for n in names:
             t = self.tables.get(n)
@@ -187,9 +228,12 @@ class SchemaIndex:
             ]
             sample = json.dumps(t.get("samples", [])[:2], ensure_ascii=False)
             fks = "、".join(f'{c} → {ref[0]}.{ref[1]}' for c, ref in (t.get("fks") or {}).items())
+            picked = (columns_map or {}).get(n) or []
+            related = "、".join(f'{c["cn"]}({c["name"]})' for c in picked[:8])
             parts.append(
                 f'### 表 `{n}` — {t["cn"]}（业务域：{t["domain"]}，约 {t["rows"]} 行）\n'
                 f'{t["ddl"]}\n'
+                + (f'  与问题最相关的列：{related}\n' if related else "")
                 + (f'  外键：{fks}\n' if fks else "")
                 + ("\n".join(enum_lines) + "\n" if enum_lines else "")
                 + f'  样例行：{sample}'

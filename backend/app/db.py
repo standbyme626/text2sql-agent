@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""SQLite 只读执行器：只允许 SELECT / WITH，强制 LIMIT，带超时与危险语句拦截。"""
+"""只读 SQL 执行器：SQLite（默认）/ PostgreSQL（DATABASE_URL 切换）。
+
+统一遵守：只允许 SELECT / WITH、单语句、强制 LIMIT、超时保护、只读连接。
+Postgres 侧额外启用 default_transaction_read_only + statement_timeout。
+"""
 from __future__ import annotations
 
 import json
@@ -8,6 +12,7 @@ import sqlite3
 import time
 from typing import Any
 
+from . import tracing
 from .config import settings
 
 # 用 ASCII 边界代替 \b：Python 默认 Unicode 语义下中文/下划线会被算作 \w，
@@ -17,7 +22,7 @@ _ASCII_R = r"(?![A-Za-z0-9_])"
 DANGEROUS = re.compile(
     _ASCII_L + r"(insert|update|delete|drop|alter|create|truncate|attach|detach|"
     r"pragma|vacuum|load_extension|raise|exec|begin|commit|rollback|reindex|"
-    r"randomblob|zeroblob)" + _ASCII_R,
+    r"randomblob|zeroblob|copy|grant|revoke)" + _ASCII_R,
     re.IGNORECASE,
 )
 TOP_LIMIT = re.compile(_ASCII_L + r"limit" + _ASCII_R, re.IGNORECASE)
@@ -38,11 +43,7 @@ class SqlTimeout(RuntimeError):
 
 
 def _mask(sql: str) -> str:
-    """把字符串字面量 / 引号标识符 / 注释替换为等长空白，再做结构检查。
-
-    这样 REPLACE(name,'旧','新')、WHERE name LIKE '%a;b%'、'a--b' 这类合法只读查询
-    不会因为字符串内容被误判为危险关键字、多语句或注释。
-    """
+    """把字符串字面量 / 引号标识符 / 注释替换为等长空白，再做结构检查。"""
     def blank(m):
         return re.sub(r"[^\n]", " ", m.group(0))
 
@@ -55,7 +56,6 @@ def _mask(sql: str) -> str:
 
 def _top_level_limit(masked: str) -> bool:
     """只认最外层（括号深度 0）的 LIMIT；子查询里的 LIMIT 不算。"""
-    # 把括号内部替换成空白，只在顶层文本里找 LIMIT
     buf, d = [], 0
     for ch in masked:
         if ch == "(":
@@ -75,7 +75,6 @@ def clean_sql(raw: str) -> str:
     if not sql:
         raise SqlRejected("SQL 为空")
     masked = _mask(sql)
-    # 多语句只在字符串/注释之外判断；末尾分号已在上面去掉
     if ";" in masked:
         raise SqlRejected("只允许执行单条 SQL 语句")
     if not SQL_START.match(masked.strip()):
@@ -97,32 +96,29 @@ def _jsonable(v: Any) -> Any:
         return v
     if isinstance(v, float):
         return round(v, 6)
+    try:
+        from decimal import Decimal
+        if isinstance(v, Decimal):
+            return round(float(v), 6)
+    except ImportError:  # pragma: no cover
+        pass
     if isinstance(v, (bytes, bytearray, memoryview)):
         return bytes(v).hex()
     return str(v)
 
 
-def execute_readonly(
-    raw_sql: str,
-    max_rows: int | None = None,
-    timeout_ms: int | None = None,
-) -> dict:
-    """执行只读查询，返回 {columns, rows, row_count, elapsed_ms, truncated, sql}。
+def _with_limit(sql: str, limit: int) -> tuple[str, str]:
+    if _top_level_limit(_mask(sql)):
+        return sql, sql
+    return f"{sql} LIMIT {limit + 1}", f"{sql} LIMIT {limit}"
 
-    统一注入 LIMIT limit+1（而非 limit），这样 fetchmany 能真正判断是否被截断，
-    前端与自动洞察才能知道「这不是全量」。
-    """
+
+def _execute_sqlite(raw_sql: str, limit: int, timeout: int,
+                    db_path: str | None = None) -> dict:
     sql = clean_sql(raw_sql)
-    limit = max_rows or settings.MAX_RESULT_ROWS
-    timeout = timeout_ms or settings.SQL_TIMEOUT_MS
-
-    # 执行版多取 1 行用于判断截断；对外只展示 LIMIT limit（不暴露内部 +1）
-    exec_sql = display_sql = sql
-    if not _top_level_limit(_mask(sql)):
-        exec_sql = f"{sql} LIMIT {limit + 1}"
-        display_sql = f"{sql} LIMIT {limit}"
-
-    uri = f"file:{settings.db_path.as_posix()}?mode=ro"
+    exec_sql, display_sql = _with_limit(sql, limit)
+    path = db_path or str(settings.db_path)
+    uri = f"file:{path}?mode=ro"
     conn = sqlite3.connect(uri, uri=True, timeout=5)
     conn.execute("PRAGMA query_only = ON")
     conn.execute(f"PRAGMA busy_timeout = {timeout}")
@@ -148,14 +144,83 @@ def execute_readonly(
             "row_count": len(rows),
             "elapsed_ms": round(elapsed, 2),
             "truncated": truncated,
+            "dialect": "sqlite",
         }
     except sqlite3.Error as e:
         if "interrupted" in str(e).lower():
             raise SqlTimeout("查询超时，请缩小范围或加筛选条件") from e
-        raise RuntimeError(f"SQL 执行失败：{type(e).__name__}") from e
+        raise RuntimeError(f"SQL 执行失败：{str(e)[:200]}") from e
     finally:
         conn.set_progress_handler(None, 0)
         conn.close()
+
+
+def _execute_postgres(raw_sql: str, limit: int, timeout: int) -> dict:
+    try:
+        import psycopg  # type: ignore
+    except ImportError as e:  # pragma: no cover - 取决于部署
+        raise RuntimeError(
+            'Postgres 模式需要安装驱动：pip install "psycopg[binary]"'
+        ) from e
+    sql = clean_sql(raw_sql)
+    exec_sql, display_sql = _with_limit(sql, limit)
+    started = time.perf_counter()
+    try:
+        with psycopg.connect(
+            settings.DATABASE_URL,
+            connect_timeout=max(3, min(15, timeout // 1000 or 3)),
+            options=(
+                f"-c statement_timeout={timeout} "
+                "-c default_transaction_read_only=on"
+            ),
+        ) as conn:
+            conn.execute("SET TRANSACTION READ ONLY")
+            with conn.cursor() as cur:
+                cur.execute(exec_sql)
+                columns = [d.name for d in (cur.description or [])]
+                fetched = cur.fetchmany(limit + 1)
+                elapsed = (time.perf_counter() - started) * 1000
+                truncated = len(fetched) > limit
+                rows = [[_jsonable(v) for v in row] for row in fetched[:limit]]
+                return {
+                    "sql": display_sql,
+                    "sql_executed": exec_sql,
+                    "columns": columns,
+                    "rows": rows,
+                    "row_count": len(rows),
+                    "elapsed_ms": round(elapsed, 2),
+                    "truncated": truncated,
+                    "dialect": "postgres",
+                }
+    except Exception as e:  # psycopg 异常类型很多，统一转成可回灌 Observation
+        msg = str(e).lower()
+        if "timeout" in msg or "canceling statement" in msg:
+            raise SqlTimeout("查询超时，请缩小范围或加筛选条件") from e
+        raise RuntimeError(f"SQL 执行失败：{str(e)[:200]}") from e
+
+
+def execute_readonly(
+    raw_sql: str,
+    max_rows: int | None = None,
+    timeout_ms: int | None = None,
+    db_path: str | None = None,
+) -> dict:
+    """执行只读查询，返回 {columns, rows, row_count, elapsed_ms, truncated, sql}。
+
+    db_path 显式传入时强制走 SQLite（BIRD 评估等场景）；否则按 DATABASE_URL 分派。
+    """
+    limit = max_rows or settings.MAX_RESULT_ROWS
+    timeout = timeout_ms or settings.SQL_TIMEOUT_MS
+    use_pg = db_path is None and settings.is_postgres
+    with tracing.span("db.execute", dialect="postgres" if use_pg else "sqlite") as sp:
+        try:
+            res = (_execute_postgres(raw_sql, limit, timeout) if use_pg
+                   else _execute_sqlite(raw_sql, limit, timeout, db_path))
+            sp.update(row_count=res["row_count"], truncated=res["truncated"], ok=True)
+            return res
+        except Exception as e:
+            sp.update(ok=False, error=type(e).__name__)
+            raise
 
 
 def table_sample(name: str, n: int = 5) -> dict:

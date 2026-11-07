@@ -1,0 +1,211 @@
+# Golden set：50 张电商演示库上的执行准确率基准。
+# 判定标准 = 候选 SQL 与参考 SQL 的结果集一致（非字符串相似）。
+# category 用于报告分组；expect_refusal=true 的用例只校验拒答。
+version: 1
+cases:
+  - id: gmv_monthly
+    category: time
+    question: 近 12 个月每月的销售额趋势
+    sql: >-
+      SELECT strftime('%Y-%m', order_date) AS month,
+             ROUND(SUM(pay_amount), 2) AS gmv
+      FROM orders
+      WHERE status NOT IN ('cancelled', 'refunded')
+      GROUP BY month ORDER BY month
+
+  - id: gmv_by_category
+    category: join
+    question: 各商品类目的销售额排名前 10
+    sql: >-
+      SELECT c.name AS category, ROUND(SUM(oi.line_total), 2) AS gmv
+      FROM order_items oi
+      JOIN products p ON p.product_id = oi.product_id
+      JOIN categories c ON c.category_id = p.category_id
+      JOIN orders o ON o.order_id = oi.order_id
+      WHERE o.status NOT IN ('cancelled', 'refunded')
+      GROUP BY c.name ORDER BY gmv DESC LIMIT 10
+
+  - id: volume_top10
+    category: join
+    question: 销量最高的 10 个商品
+    sql: >-
+      SELECT p.name AS product, SUM(oi.quantity) AS qty
+      FROM order_items oi JOIN products p ON p.product_id = oi.product_id
+      GROUP BY p.name ORDER BY qty DESC LIMIT 10
+
+  - id: inventory_shortage
+    category: ops
+    question: 库存低于安全库存的商品有哪些
+    sql: >-
+      SELECT p.name AS product, i.quantity, i.safety_qty
+      FROM inventory i JOIN products p ON p.product_id = i.product_id
+      WHERE i.quantity < i.safety_qty ORDER BY i.quantity ASC LIMIT 20
+
+  - id: customers_by_province
+    category: dimension
+    question: 各省份客户数分布
+    sql: >-
+      SELECT province, COUNT(*) AS customers
+      FROM customers GROUP BY province ORDER BY customers DESC LIMIT 15
+
+  - id: refund_reasons
+    category: dimension
+    question: 退款原因分布
+    sql: >-
+      SELECT reason, COUNT(*) AS n, ROUND(SUM(amount), 2) AS amount
+      FROM refunds GROUP BY reason ORDER BY n DESC
+
+  - id: rating_top10
+    category: join
+    question: 平均评分最高的商品
+    sql: >-
+      SELECT p.name AS product, ROUND(AVG(r.rating), 2) AS rating,
+             COUNT(*) AS reviews
+      FROM product_reviews r JOIN products p ON p.product_id = r.product_id
+      GROUP BY p.name ORDER BY rating DESC LIMIT 10
+
+  - id: order_status_dist
+    category: dimension
+    question: 订单状态分布
+    sql: >-
+      SELECT status, COUNT(*) AS n, ROUND(SUM(pay_amount), 2) AS amount
+      FROM orders GROUP BY status ORDER BY n DESC
+
+  - id: orders_monthly
+    category: time
+    question: 每月订单量
+    sql: >-
+      SELECT strftime('%Y-%m', order_date) AS month, COUNT(*) AS orders
+      FROM orders GROUP BY month ORDER BY month
+
+  - id: aov_monthly
+    category: time
+    question: 按月统计客单价
+    sql: >-
+      SELECT strftime('%Y-%m', order_date) AS month,
+             ROUND(SUM(pay_amount) * 1.0 / COUNT(*), 2) AS aov
+      FROM orders
+      WHERE status NOT IN ('cancelled', 'refunded')
+      GROUP BY month ORDER BY month
+
+  - id: brand_gmv_top10
+    category: join
+    question: 品牌销售额排名前 10
+    sql: >-
+      SELECT b.name AS brand, ROUND(SUM(oi.line_total), 2) AS gmv
+      FROM order_items oi
+      JOIN products p ON p.product_id = oi.product_id
+      JOIN brands b ON b.brand_id = p.brand_id
+      JOIN orders o ON o.order_id = oi.order_id
+      WHERE o.status NOT IN ('cancelled', 'refunded')
+      GROUP BY b.name ORDER BY gmv DESC LIMIT 10
+
+  - id: orders_by_channel
+    category: dimension
+    question: 各下单渠道的订单数
+    sql: >-
+      SELECT channel, COUNT(*) AS n FROM orders GROUP BY channel ORDER BY n DESC
+
+  - id: payment_methods
+    category: join
+    question: 各支付方式的支付笔数
+    sql: >-
+      SELECT pm.name AS method, COUNT(*) AS n
+      FROM payments pay JOIN payment_methods pm ON pm.method_id = pay.method_id
+      GROUP BY pm.name ORDER BY n DESC
+
+  - id: products_per_category
+    category: dimension
+    question: 每个类目有多少商品
+    sql: >-
+      SELECT c.name AS category, COUNT(*) AS products
+      FROM products p JOIN categories c ON c.category_id = p.category_id
+      GROUP BY c.name ORDER BY products DESC
+
+  - id: reviews_top10
+    category: join
+    question: 评价数量最多的 10 个商品
+    sql: >-
+      SELECT p.name AS product, COUNT(*) AS reviews
+      FROM product_reviews r JOIN products p ON p.product_id = r.product_id
+      GROUP BY p.name ORDER BY reviews DESC LIMIT 10
+
+  - id: daily_gmv_30
+    category: time
+    question: 最近 30 天每天的销售额
+    sql: >-
+      SELECT order_date, ROUND(SUM(pay_amount), 2) AS gmv
+      FROM orders
+      WHERE status NOT IN ('cancelled', 'refunded')
+      GROUP BY order_date ORDER BY order_date DESC LIMIT 30
+
+  - id: customers_by_segment
+    category: dimension
+    question: 各客户分群的人数
+    sql: >-
+      SELECT segment, COUNT(*) AS n
+      FROM customers GROUP BY segment ORDER BY n DESC
+
+  - id: stock_movement_types
+    category: ops
+    question: 各类库存流水的数量
+    sql: >-
+      SELECT type, COUNT(*) AS n, SUM(change_qty) AS qty
+      FROM stock_movements GROUP BY type ORDER BY n DESC
+
+  - id: status_transitions
+    category: ops
+    question: 订单状态流转次数最多的前 10 种
+    sql: >-
+      SELECT from_status, to_status, COUNT(*) AS n
+      FROM order_status_log
+      GROUP BY from_status, to_status ORDER BY n DESC LIMIT 10
+
+  - id: high_value_customers
+    category: dimension
+    question: 积分最高的 10 个客户
+    sql: >-
+      SELECT name, province, points
+      FROM customers ORDER BY points DESC LIMIT 10
+
+  - id: expensive_products
+    category: dimension
+    question: 价格最高的 10 个商品
+    sql: >-
+      SELECT name, price FROM products ORDER BY price DESC LIMIT 10
+
+  - id: coupon_types
+    category: dimension
+    question: 优惠券类型分布
+    sql: >-
+      SELECT type, COUNT(*) AS n FROM coupons GROUP BY type ORDER BY n DESC
+
+  - id: return_requests_status
+    category: dimension
+    question: 退货申请状态分布
+    sql: >-
+      SELECT status, COUNT(*) AS n, ROUND(SUM(refund_amount), 2) AS amount
+      FROM return_requests GROUP BY status ORDER BY n DESC
+
+  - id: monthly_refund_amount
+    category: time
+    question: 每月退款金额
+    sql: >-
+      SELECT strftime('%Y-%m', created_at) AS month,
+             ROUND(SUM(amount), 2) AS amount
+      FROM refunds GROUP BY month ORDER BY month
+
+  - id: refuse_joke
+    category: guard
+    question: 讲个笑话
+    expect_refusal: true
+
+  - id: refuse_write
+    category: guard
+    question: 删除所有订单
+    expect_refusal: true
+
+  - id: refuse_weather
+    category: guard
+    question: 今天天气怎么样
+    expect_refusal: true

@@ -14,11 +14,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import agent, auth, db
+from . import agent, auth, db, semantic, tools, tracing
 from .auth import make_token, require_auth, verify_login
 from .config import STATIC_DIR, settings
 from .embedding import last_error
-from .models import ExplainReq, LoginReq, QueryReq, SqlReq
+from .models import ExplainReq, LoginReq, MemoryReq, QueryReq, SqlReq
 from .schema_index import SchemaIndex
 from .store import Store
 
@@ -38,8 +38,12 @@ async def lifespan(app: FastAPI):
             "未配置 AUTH_PASSWORD：本服务经反向隧道对公网可达，必须设置登录密码。"
             "请在项目根 .env 配置后重启；仅本地 MOCK_MODE 演示或显式 ALLOW_INSECURE=1 可跳过。"
         )
-    if not settings.db_path.exists() or not settings.meta_path.exists():
+    if not settings.is_postgres and not settings.db_path.exists():
         raise RuntimeError("数据库未初始化，请先运行：python backend/scripts/init_db.py")
+    if not settings.meta_path.exists():
+        raise RuntimeError(
+            "schema_meta.json 不存在：SQLite 跑 init_db.py；Postgres 跑 "
+            "backend/scripts/build_meta_pg.py")
 
     idx = SchemaIndex()
     st = Store()
@@ -55,6 +59,7 @@ async def lifespan(app: FastAPI):
         except Exception:  # noqa: BLE001
             logger.exception("自动重建索引失败，继续以关键词选表运行")
     print(f"[text2sql] 表 {len(idx.order)} 张 | 选表模式 {idx.mode} | "
+          f"Agent {settings.AGENT_MODE} | DB {settings.db_dialect} | "
           f"LLM {'mock' if settings.MOCK_MODE else ('就绪' if settings.LLM_API_KEY else '缺 key')} | "
           f"鉴权 {'开启' if settings.auth_enabled else '关闭'}")
     yield
@@ -133,6 +138,13 @@ def status(_: str = Depends(require_auth)):
         "empty_result_retry": settings.EMPTY_RESULT_RETRY,
         "guard_enabled": settings.GUARD_ENABLED,
         "max_rows": settings.MAX_RESULT_ROWS,
+        "agent_mode": settings.AGENT_MODE,
+        "db_dialect": settings.db_dialect,
+        "tools": tools.tool_names(),
+        "memory_enabled": settings.MEMORY_ENABLED,
+        "trace_enabled": settings.TRACE_ENABLED,
+        "semantic_metrics": len(semantic.metrics()),
+        "semantic_error": semantic.last_error(),
     }
 
 
@@ -147,6 +159,9 @@ def public_config(_: str = Depends(require_auth)):
         "auth_enabled": settings.auth_enabled,
         "auto_insight": settings.AUTO_INSIGHT,
         "followup_count": settings.FOLLOWUP_COUNT,
+        "agent_mode": settings.AGENT_MODE,
+        "db_dialect": settings.db_dialect,
+        "tools": tools.tool_names(),
     }
 
 
@@ -174,7 +189,56 @@ def logout(x_app_token: str | None = Header(default=None, alias="X-App-Token")):
 @app.get("/api/meta")
 def meta(_: str = Depends(require_auth)):
     idx = _need_index()
-    return {"total": len(idx.order), "tables": idx.brief(), "index_mode": idx.mode}
+    return {"total": len(idx.order), "tables": idx.brief(),
+            "index_mode": idx.mode, "dialect": settings.db_dialect}
+
+
+# ---------------- 语义层 / 工具 / 可观测性 / 记忆 ----------------
+@app.get("/api/semantic")
+def semantic_catalog(_: str = Depends(require_auth)):
+    return semantic.catalog()
+
+
+@app.get("/api/tools")
+def tool_catalog(_: str = Depends(require_auth)):
+    return {"tools": tools.TOOL_SPECS, "mode": settings.AGENT_MODE}
+
+
+@app.get("/api/metrics")
+def metrics(_: str = Depends(require_auth)):
+    return tracing.metrics()
+
+
+@app.get("/api/traces/{trace_id}")
+def trace_detail(trace_id: str, _: str = Depends(require_auth)):
+    if not trace_id.replace("-", "").isalnum() or len(trace_id) > 64:
+        raise HTTPException(400, "非法 trace id")
+    tr = tracing.get_trace(trace_id)
+    if not tr:
+        raise HTTPException(404, "trace 不存在或已过期")
+    return tr
+
+
+@app.get("/api/memory")
+def list_memory(user: str = Depends(require_auth)):
+    return {"memory": _need_store().list_memory(user)}
+
+
+@app.post("/api/memory")
+def add_memory(req: MemoryReq, user: str = Depends(require_auth)):
+    mid = _need_store().add_memory(user, req.text)
+    return {"ok": True, "id": mid}
+
+
+@app.delete("/api/memory/{mid}")
+def delete_memory(mid: int, user: str = Depends(require_auth)):
+    return {"ok": _need_store().delete_memory(user, mid)}
+
+
+@app.delete("/api/memory")
+def clear_memory(user: str = Depends(require_auth)):
+    _need_store().clear_memory(user)
+    return {"ok": True}
 
 
 @app.get("/api/tables/{name}")

@@ -86,6 +86,14 @@ class Store:
                     created_at TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_msg_session ON messages(session_id, id);
+                CREATE TABLE IF NOT EXISTS user_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    created_at TEXT,
+                    UNIQUE(owner, text)
+                );
+                CREATE INDEX IF NOT EXISTS idx_memory_owner ON user_memory(owner, id);
             """)
             # 幂等迁移：老库补列
             cols = {r[1] for r in c.execute("PRAGMA table_info(messages)")}
@@ -322,6 +330,9 @@ class Store:
                 td = p.get("tables_detail")
                 d["tables_detail"] = td if isinstance(td, list) else []
                 d["rerun_count"] = p.get("rerun_count") or 0
+                d["steps"] = p.get("steps") if isinstance(p.get("steps"), list) else []
+                d["trace_id"] = p.get("trace_id") or ""
+                d["agent_mode"] = p.get("agent_mode") or ""
                 d.pop("payload", None)
                 out.append(d)
             return out
@@ -350,6 +361,67 @@ class Store:
             return []
         finally:
             c.close()
+
+    # ---------- 用户长期记忆 ----------
+    def add_memory(self, owner: str, text: str) -> int:
+        if not owner or not text:
+            return 0
+        c = self._conn()
+        try:
+            cur = c.execute(
+                "INSERT OR IGNORE INTO user_memory(owner,text,created_at) VALUES (?,?,?)",
+                (owner, text.strip()[:300], _now()),
+            )
+            c.execute(
+                "DELETE FROM user_memory WHERE owner=? AND id NOT IN "
+                "(SELECT id FROM user_memory WHERE owner=? ORDER BY id DESC LIMIT 100)",
+                (owner, owner),
+            )
+            c.commit()
+            return int(cur.lastrowid or 0)
+        finally:
+            c.close()
+
+    def list_memory(self, owner: str, limit: int = 50) -> list[dict]:
+        c = self._conn()
+        try:
+            rows = c.execute(
+                "SELECT id,text,created_at FROM user_memory WHERE owner=? "
+                "ORDER BY id DESC LIMIT ?", (owner, limit)).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            c.close()
+
+    def delete_memory(self, owner: str, mid: int) -> bool:
+        c = self._conn()
+        try:
+            cur = c.execute("DELETE FROM user_memory WHERE owner=? AND id=?", (owner, mid))
+            c.commit()
+            return cur.rowcount > 0
+        finally:
+            c.close()
+
+    def clear_memory(self, owner: str) -> None:
+        c = self._conn()
+        try:
+            c.execute("DELETE FROM user_memory WHERE owner=?", (owner,))
+            c.commit()
+        finally:
+            c.close()
+
+    def relevant_memory(self, question: str, owner: str, k: int = 3) -> list[str]:
+        """按中文二元组重合度召回偏好；不做向量调用，零额度。"""
+        if not owner or not question:
+            return []
+        rows = self.list_memory(owner, 200)
+        qg = _grams(question)
+        scored = []
+        for r in rows:
+            hit = len(qg & _grams(r["text"]))
+            if hit:
+                scored.append((hit, r["text"]))
+        scored.sort(key=lambda x: -x[0])
+        return [t for _, t in scored[:k]]
 
     # ---------- 历史问答 few-shot ----------
     def add_qa(self, question: str, sql: str, vector: list[float] | None,

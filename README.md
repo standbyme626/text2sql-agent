@@ -2,14 +2,19 @@
 
 # text2sql-agent
 
-**面向电商数据集的中文 Text-to-SQL Agent**
+**中文 Text-to-SQL / Data Agent · 2026 tool-calling 架构**
 
-向量选表 · 只读闸门 · ReAct 自纠正 · 拒答引导 · SSE 流式 · 可审计
+工具调用循环 · 受治理语义层 · 列级 schema linking · MCP Server · 执行准确率评测 · Trace 观测
 
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white)
 ![Vue](https://img.shields.io/badge/Vue-3.5-42B883?logo=vue.js&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-read--only-003B57?logo=sqlite&logoColor=white)
+![Postgres](https://img.shields.io/badge/Postgres-read--only-336791?logo=postgresql&logoColor=white)
+![MCP](https://img.shields.io/badge/MCP-stdio-6B4FBB)
+![Tool Calling](https://img.shields.io/badge/Agent-tool--calling-0EA5E9)
+![Eval](https://img.shields.io/badge/Eval-execution%20accuracy-16A34A)
+![CI](https://github.com/standbyme626/text2sql-agent/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 [项目概览](#1-项目概览) · [核心特性](#2-核心特性) · [界面](#3-界面) · [系统架构](#4-系统架构) · [快速开始](#8-快速开始) · [API](#9-api)
@@ -18,11 +23,11 @@
 
 </div>
 
-> **项目状态：可运行 / 单实例演示。**
+> **项目状态：v3.0 / 2026 Agent 架构 / 单实例演示。**
 > 曾在公网域名上以「应用层登录 + 只读闸门」对外提供过一段时间，单账号使用；
 > 仓库不含数据库文件、向量索引与任何密钥，首次运行按第 8 节初始化，约 1 分钟建好 50 张表。
 
-**50 张表** · **51,899 行** · **Top-6 向量选表** · **90 项自测** · **单轮 ≤ 5 次 LLM 调用**
+**50 张表** · **51,899 行** · **tool-calling Agent** · **4 个工具 + MCP** · **109 项自测** · **单轮 ≤ 5 次 LLM 调用**
 
 ---
 
@@ -62,23 +67,27 @@ Text-to-SQL 的 demo 半天能写完，但它离「能给别人用」差一段�
 
 ### 1.2 方案
 
-采用 **固定主链路 + 局部 ReAct 循环**：
+采用 **2026 tool-calling Agent + 固定流水线降级** 的双模架构：
 
-- 主链路固定：选表 → 生成 → 校验 → 执行 → 解读，保证每一步可观测、可回放；
-- 局部保留 Agent 自主性：只在「报错 / 0 行 / 缺表缺列」时把 Observation 回灌重写，且有硬预算；
-- 选表用向量检索，但**必须能降级**：没 key、429、索引损坏时退回中文关键词匹配；
-- 拒答分两层：规则前置拦截零成本，模型协议处理模糊问题。
+- **toolloop（默认）**：模型通过 OpenAI tools 自主调用 `search_schema` / `run_sql` / `list_metrics` / `remember_preference`，执行结果作为 Observation 回灌，形成「规划 → 调工具 → 看结果 → 修正」的真实循环；
+- **workflow（降级）**：模型或网关不支持 tools 时，同一请求内无缝回退固定流水线（选表 → 生成 → 执行 → 报错重试）；
+- 选表用向量检索 + **列级关键词 linking**，没 key / 429 / 索引损坏时自动退回纯关键词；
+- 业务口径升级为 **YAML 语义层**（可版本化、可 API 审计），不再是一段硬编码 prompt；
+- 拒答分两层：规则前置零成本，模型协议处理模糊问题；
+- 全链路 **trace + token/延迟/工具失败率** 观测，查询可回放。
 
-### 1.3 六个平面
+### 1.3 八个平面
 
 | 平面 | 职责 | 入口 |
 |---|---|---|
 | 策略 | 配置快照、次数上限钳制、鉴权开关 | `config.py` |
-| 执行 | Agent 编排、上下文组装、自纠正循环 | `agent.py` |
+| Agent | tool-calling 循环 / workflow 降级 / 上下文组装 | `agent.py` / `tools.py` |
+| 语义 | 指标口径、标准 JOIN、方言日期函数 | `semantic/metrics.yaml` / `semantic.py` |
 | 治理 | 只读闸门、拒答护栏、限流 | `db.py` / `guard.py` / `auth.py` |
-| 数据 | 50 表 schema、向量索引、会话与 few-shot | `schema_index.py` / `store.py` |
-| 观测 | SSE 阶段事件、`/api/status`、错误脱敏 | `main.py` |
-| 交互 | 会话、SQL 编辑重跑、图表、移动端 | `frontend/src/` |
+| 数据 | 50 表 schema、SQLite/Postgres、向量索引、会话/few-shot/记忆 | `schema_index.py` / `store.py` / `db.py` |
+| 接口 | Web SSE + **MCP stdio server** | `main.py` / `mcp_server.py` |
+| 观测 | trace / span / token / p50-p95 / 工具失败率 | `tracing.py` |
+| 交互 | 会话、SQL 编辑重跑、图表、Agent 轨迹时间线 | `frontend/src/` |
 
 ---
 
@@ -86,17 +95,24 @@ Text-to-SQL 的 demo 半天能写完，但它离「能给别人用」差一段�
 
 | 能力 | 代码入口 |
 |---|---|
-| **向量选表** — 问题向量化 → Top-6 表；中文关键词融合打分兜底 | `schema_index.py::search`、`keyword_score` |
+| **Tool-calling Agent** — 模型自主调 search_schema / run_sql / list_metrics；报错与 0 行作为 Observation 回灌 | `agent.py::_tool_loop`、`tools.py` |
+| **MCP Server** — stdio 暴露同一套只读工具，可接 Claude Code / opencode / 任意 MCP host | `backend/mcp_server.py` |
+| **向量选表 + 列级 linking** — 问题向量化 → Top-6 表 + 外键闭包；列级中文关键词打分 | `schema_index.py::search`、`column_scores` |
+| **YAML 语义层** — GMV/销量/客单价等指标与标准 JOIN 可版本化、可 API 审计 | `semantic/metrics.yaml`、`semantic.py` |
+| **执行准确率评测** — golden set + BIRD dev 加载器，结果集比对而非字符串相似 | `backend/scripts/eval.py`、`eval/golden.yaml` |
+| **Trace 观测** — OTel 语义兼容 JSONL，p50/p95、token、工具失败率 | `tracing.py`、`/api/metrics` |
+| **跨会话记忆** — 显式偏好写入 + 问题召回注入，零 embedding 成本 | `store.py::add_memory`、`relevant_memory` |
+| **Postgres 只读** — `DATABASE_URL` 切换；默认事务只读 + statement_timeout | `db.py::_execute_postgres`、`build_meta_pg.py` |
 | **外键闭包补表** — 缺 JOIN 父表时按 `fks` 补全，最多 `FK_EXPAND_MAX` 张 | `schema_index.py::expand_with_fks` |
 | **上下文组装** — DDL + 中文列说明 + 枚举值 + 样例行 + 业务口径 + few-shot + 交替历史 | `prompt_context`、`build_messages` |
 | **SQL 生成** — 只允许一条 SELECT；无法回答时走 `【拒答】原因｜建议` 协议 | `llm.py::chat`、`extract_sql` |
 | **只读闸门** — 剥离字面量后校验关键字/注释/多语句；强制顶层 LIMIT；5s 超时 | `db.py::clean_sql`、`_top_level_limit` |
-| **ReAct 自纠正** — 报错 / 0 行 / 缺表缺列作为 Observation 回灌；单轮 LLM 硬预算 | `agent.py::run_agent` |
+| **双层自纠正** — toolloop 内模型自主重试；workflow 报错/0 行/缺表回灌；单轮硬预算 | `agent.py::_tool_loop`、`_workflow_loop` |
 | **自动解读** — 结论 + 追问合并为 1 次轻量调用，只喂前 8 行；0 行/截断走专用提示 | `agent.py::build_insight` |
 | **拒答引导** — 规则前置拦截无关/越权/注入；模糊问题给可点击的正确问法 | `guard.py::check`、`parse_refusal` |
 | **会话还原** — 完整回答结构化落库（`payload`），切走再切回表格/图表/结论都在 | `store.py::add_answer`、`get_history` |
 | **鉴权** — 中文登录页 + HMAC token，签名绑定密码版本；登录失败按 IP 限流 | `auth.py::make_token`、`rate_ok` |
-| **流式输出** — SSE 十种事件：`session` / `stage` / `tables` / `sql` / `result` / `retry` / `insight` / `guidance` / `error` / `done` | `main.py::query`、`agent.py` |
+| **流式输出** — SSE 事件：`session` / `stage` / `tables` / `step` / `sql` / `result` / `retry` / `insight` / `guidance` / `error` / `done`；带 `trace_id` | `main.py::query`、`agent.py` |
 | **前端** — Vue 3 单页，无 UI 框架，图表用原生 SVG 手绘 | `frontend/src/components/` |
 
 ---
@@ -168,41 +184,43 @@ Text-to-SQL 的 demo 半天能写完，但它离「能给别人用」差一段�
 ①  guard.check ─────── 无关 / 越权 / 注入 ──▶ guidance（0 次模型调用）
    │ 通过
    ▼
-②  embed(question) ──▶ Qwen3-Embedding-8B（1024 维）
-   │                    └─ 失败则降级：中文关键词选表
+②  embed(question) → Top-6 表 + 外键闭包 + 列级 linking
+   │                  （失败自动降级为中文关键词）
    ▼
-③  SchemaIndex.search ──▶ Top-6 表
-   └─ expand_with_fks ──▶ 外键闭包补齐 JOIN 父表
+③  build_messages：语义层指标 + DDL + 枚举 + few-shot + 历史 + 长期记忆
+   │
    ▼
-④  prompt_context ──▶ DDL / 列中文名 / 枚举值 / 样例行 / 业务口径
-   └─ store.similar ──▶ few-shot（按表名白名单过滤）
+④  ┌───────────── Agent tool-calling loop（默认）─────────────┐
+   │  LLM 决策 ──▶ search_schema / run_sql / list_metrics      │
+   │      ▲                         │                          │
+   │      └──── Observation ◀───────┘（报错 / 0 行 / 缺列）    │
+   │  直到模型输出 DONE 或拒答；超步数/超预算即停               │
+   └────────────────────────────────────────────────────────────┘
+   │  （模型不支持 tools → 同一请求内回退 workflow 固定流水线）
    ▼
-⑤  llm.chat ──▶ 一条 SELECT（或【拒答】原因｜建议）
+⑤  clean_sql 只读闸门 ─▶ execute_readonly（mode=ro / PG 只读事务 + 超时）
    ▼
-⑥  clean_sql 只读闸门 ──▶ execute_readonly（mode=ro + query_only + 5s）
-   │  报错 / 0 行 / 缺表缺列
-   └──────────▶ 作为 Observation 回灌重写（≤ MAX_LLM_CALLS）
+⑥  先落库：user + assistant 同事务（payload 存完整回答 + 工具轨迹 + trace_id）
    ▼
-⑦  先落库：user + assistant 同事务（payload 存完整回答）
+⑦  build_insight ──▶ 中文结论 + 3 条追问（只喂前 8 行）
    ▼
-⑧  build_insight ──▶ 中文结论 + 3 条追问
+⑧  SSE 推送：session → stage → tables → step → sql → result → insight → done
    ▼
-⑨  SSE 推送：session → stage → tables → sql → result → insight → done
+⑨  trace 落盘：llm.chat / tool.* / db.execute 的耗时、token、成功失败
 ```
 
 ### 4.2 一次提问的完整过程
 
 1. 前端 `POST /api/query`，建立 SSE 连接，携带 `X-App-Token`；
-2. `guard.check` 做规则前置：命中写操作、注入、闲聊直接返回 `guidance`，**不调用任何模型**；
-3. `embedding.embed_one` 把问题向量化（失败则降级为关键词选表）；
-4. `SchemaIndex.search` 融合向量分与中文关键词分取 Top-6，再按外键补全 JOIN 父表；
-5. `prompt_context` 组装 DDL、列中文名、枚举值、样例行、业务口径，`store.similar` 补 few-shot；
-6. `llm.chat` 生成 SQL，`extract_sql` 只取第一条 SELECT；
-7. `db.clean_sql` 剥离字面量后校验，注入顶层 LIMIT，`execute_readonly` 以 `mode=ro` 执行；
-8. 失败或 0 行时把错误作为 Observation 回灌重写（受 `MAX_SQL_RETRY` 与 `MAX_LLM_CALLS` 双重约束）；
-9. **先落库**：`store.add_answer` 把 SQL、结果、命中表、图表建议写进同一条 assistant 消息；
-10. `build_insight` 生成中文结论与追问，patch 回该消息，再推 `insight` 事件；
-11. 成功问答向量化写入 `qa_history` 作为后续 few-shot（带会话归属、表名白名单、保留上限）。
+2. `guard.check` 规则前置：命中写操作、注入、闲聊直接返回 `guidance`，**不调用任何模型**；
+3. `embedding.embed_one` 向量化问题；`SchemaIndex.search` 融合向量/关键词分取 Top-6，外键闭包补齐 JOIN 父表，并给出列级 `matched_columns`；
+4. `semantic.prompt_block` 注入受治理指标与标准 JOIN；`store.similar` 补 few-shot；`store.relevant_memory` 注入用户显式偏好；
+5. **toolloop**：`llm.chat_tools` 携带 4 个工具定义；模型可多轮调用 `search_schema` / `run_sql` / `list_metrics`，每次工具结果作为 Observation 回灌；`run_sql` 内部仍走与 Web API 完全相同的只读闸门；
+6. 模型输出 DONE 后，以最后一次成功执行的 SQL 结果为准；若模型不支持 tools，则同一请求回退 `_workflow_loop`（选表→生成→执行→报错重写）；
+7. **先落库**：`store.add_answer` 把 SQL、结果、命中表、图表建议、工具轨迹、trace_id 写进同一条 assistant 消息；
+8. `build_insight` 生成中文结论与追问，patch 回该消息，再推 `insight` 事件；
+9. 全链路 span 写入 `traces.jsonl`，`/api/metrics` 可在进程内看到 p50/p95、token、工具失败率；
+10. 成功问答向量化写入 `qa_history` 作为后续 few-shot（带会话归属、表名白名单、保留上限）。
 
 ### 4.3 数据平面
 
@@ -213,13 +231,17 @@ Text-to-SQL 的 demo 半天能写完，但它离「能给别人用」差一段�
 | `schema_meta.json` | 表中文名、业务域、列说明、枚举值 | 建库时一并生成，选表与上下文都依赖它 |
 | `schema_index.json` | 50 条表描述向量 | `scripts/build_index.py` 生成，可重建 |
 | `.secret_key` | token 签名密钥 | 首次启动 `O_EXCL` 原子创建，权限 600 |
+| `traces.jsonl` | trace / span / token | OTel 语义兼容 JSONL，600；`/api/metrics` 读进程内最近 N 条 |
+| `semantic/metrics.yaml` | 受治理指标层 | 版本化指标、标准 JOIN、方言日期函数；`/api/semantic` 可审计 |
+| `user_memory`（app.db） | 跨会话偏好 | 仅显式「记住/以后/默认」写入；按中文二元组召回注入 |
 
 ### 4.4 模型供给
 
 - **文本**：`deepseek-ai/DeepSeek-V4.1-Flash-1017`（魔搭 ModelScope，OpenAI 兼容）；
 - **向量**：`Qwen/Qwen3-Embedding-8B`（硅基流动，1024 维），只用于选表与 few-shot 检索；
+- **工具调用**：默认发送 OpenAI `tools` + `tool_choice=auto`；上游返回 400/不支持时自动回退 workflow，不影响可用性；
 - **可替换**：两个端点都是 OpenAI 兼容协议，改 `.env` 的 `LLM_BASE_URL` / `LLM_MODEL` 即可换成别家；
-- **降级顺序**：向量选表 → 关键词选表；自动结论失败 → 前端提示可手动「AI 解读」；无 Key → `MOCK_MODE`。
+- **降级顺序**：toolloop → workflow；向量选表 → 关键词选表；自动结论失败 → 前端提示可手动「AI 解读」；无 Key → `MOCK_MODE`。
 
 ---
 
@@ -254,7 +276,45 @@ Top-6 只按语义选出，很容易漏掉 JOIN 需要的维表。`expand_with_f
 三重约束防止失控：`MAX_SQL_RETRY=2`（最多 3 次生成）、`MAX_LLM_CALLS=5`（单轮硬预算）、
 **429/超时不进「改 SQL」重试**（重试也不会成功，只会白烧额度）。
 
-### 5.4 可调参数
+> v3.0 起默认走 toolloop：模型看到 `run_sql` 的报错 Observation 后自行决定重写、扩表或停手，
+> 上图的 workflow 逻辑保留为降级路径（`AGENT_MODE=workflow` 或上游不支持 tools 时）。
+
+### 5.4 列级 schema linking
+
+表级 Top-K 只能保证「表选对」，复杂问题还需要「列选对」。`column_scores` 对每张候选表的
+列名 + 中文注释做中文二元组匹配，并给问题中出现的英文列名加权，输出 `matched_columns`：
+
+- 注入 prompt 的每张表增加「与问题最相关的列」一行，减少模型在 10+ 列里挑错；
+- `tables` SSE 事件与 `/api/meta` 都能看到列级命中，便于前端与审计；
+- **不额外调用 embedding**：50 表 × 十余列若做列向量会产生数百次 API 调用，这里用零成本、
+  可解释的关键词融合；需要更强列语义时再升级为列向量（`COLUMN_LINK_TOPK` 控制返回列数）。
+
+### 5.5 语义层（YAML）
+
+`backend/semantic/metrics.yaml` 是业务口径的唯一真相：
+
+```yaml
+metrics:
+  - id: gmv
+    name: 销售额 / GMV
+    synonyms: [销售额, gmv, 营收, 成交额]
+    expr: "SUM(orders.pay_amount)"
+    valid_filter: "orders.status NOT IN ('cancelled','refunded')"
+```
+
+- `semantic.prompt_block(question)` 只注入「与问题相关」的指标，控制 token；
+- `/api/semantic` 返回完整指标目录、标准 JOIN、方言日期函数，可被前端/审计消费；
+- 文件缺失或 YAML 损坏时自动退回内置口径，服务不中断；
+- 换 Postgres 时用 `dialects.postgres.date_month = date_trunc(...)`，同一指标定义跨方言复用。
+
+### 5.6 跨会话记忆
+
+- 只有用户明确说「记住 / 以后 / 默认」时，模型才会调用 `remember_preference` 写入；
+- 写入 `app.db` 的 `user_memory` 表，按 owner 隔离，每用户最多 100 条；
+- 每轮按中文二元组召回 Top-3 注入 prompt，零 embedding 调用；
+- `GET/POST/DELETE /api/memory` 可人工审计与删除，不做隐式画像。
+
+### 5.7 可调参数
 
 | 参数 | 默认 | 位置 |
 |---|---|---|
@@ -267,6 +327,13 @@ Top-6 只按语义选出，很容易漏掉 JOIN 需要的维表。`expand_with_f
 | `SQL_TIMEOUT_MS` | 5000 | 单条 SQL 超时 |
 | `EMPTY_RESULT_RETRY` | `true` | 0 行是否回灌重试 |
 | `HISTORY_TURNS` | 6 | 注入几轮历史对话 |
+| `AGENT_MODE` | `toolloop` | `toolloop` / `workflow` |
+| `MAX_AGENT_STEPS` | 6 | Agent 最多规划步数（钳制 1~20） |
+| `MAX_TOOL_SQL` | 4 | 单轮最多执行几次 SQL |
+| `COLUMN_LINK_TOPK` | 8 | 每张表返回多少相关列 |
+| `TOOL_ROW_PREVIEW` | 20 | 回灌给模型的工具结果预览行数 |
+| `MEMORY_ENABLED` | `true` | 跨会话偏好记忆开关 |
+| `TRACE_ENABLED` | `true` | 是否落 `traces.jsonl` |
 
 ---
 
@@ -276,8 +343,10 @@ Top-6 只按语义选出，很容易漏掉 JOIN 需要的维表。`expand_with_f
 
 ```text
 ① 应用层文本校验    剥离字符串字面量与注释 → 关键字 / 多语句 / 顶层 LIMIT
-② 连接级只读        sqlite3 以 mode=ro 打开 + PRAGMA query_only=ON
-③ 执行级兜底        5s 超时 + fetchmany(limit+1) 判截断
+② 连接级只读        SQLite: mode=ro + PRAGMA query_only=ON
+                    Postgres: default_transaction_read_only=on + SET TRANSACTION READ ONLY
+③ 执行级兜底        5s statement_timeout + fetchmany(limit+1) 判截断
+④ 工具入口统一      Web API / Agent run_sql / MCP stdio 走同一个 execute_readonly
 ```
 
 第 ① 道是踩坑改出来的。最初对**整条 SQL** 做关键字扫描，结果：
@@ -346,7 +415,9 @@ cp .env.example .env
 | 鉴权 | `AUTH_USER`、`AUTH_PASSWORD`、`TOKEN_TTL_HOURS`、`SECRET_KEY` |
 | 文本模型 | `LLM_BASE_URL`、`MODELSCOPE_API_KEY`、`LLM_MODEL`、`LLM_TIMEOUT`、`LLM_MAX_TOKENS` |
 | 向量模型 | `EMB_BASE_URL`、`SILICONFLOW_API_KEY`、`EMB_MODEL`、`EMB_DIM` |
-| Agent | `TOP_K_TABLES`、`FK_EXPAND_MAX`、`MAX_SQL_RETRY`、`MAX_LLM_CALLS`、`AUTO_INSIGHT`、`EMPTY_RESULT_RETRY` |
+| Agent | `AGENT_MODE`、`MAX_AGENT_STEPS`、`MAX_TOOL_SQL`、`TOP_K_TABLES`、`FK_EXPAND_MAX`、`MAX_SQL_RETRY`、`MAX_LLM_CALLS`、`AUTO_INSIGHT`、`EMPTY_RESULT_RETRY` |
+| 语义 / 数据源 | `SEMANTIC_FILE`、`DATABASE_URL`（Postgres）、`COLUMN_LINK_TOPK`、`TOOL_ROW_PREVIEW` |
+| 观测 / 记忆 | `TRACE_ENABLED`、`TRACE_RECENT`、`MEMORY_ENABLED` |
 | 护栏 | `GUARD_ENABLED`、`GUARD_SUGGESTIONS`、`RATE_LIMIT_ENABLED`、`RATE_LIMIT_PER_MIN` |
 | 开关 | `MOCK_MODE`、`AUTO_BUILD_INDEX`、`ALLOW_INSECURE` |
 
@@ -379,6 +450,19 @@ cd frontend && npm install && npm run build && cd ..
 rm -rf backend/static/* && cp -r frontend/dist/. backend/static/
 ```
 
+### 8.4.1 切换到 PostgreSQL
+
+```bash
+pip install "psycopg[binary]"
+DATABASE_URL=postgresql://user:pass@host:5432/db \
+  python backend/scripts/build_meta_pg.py        # 内省生成 schema_meta.json
+# 再把同一 DATABASE_URL 写进 .env，重启服务
+```
+
+Postgres 模式不建 SQLite 演示库；Agent、只读闸门、MCP 工具全部复用同一执行器。
+`build_meta_pg.py` 会读取表/列注释、主键、外键、估算行数，语义层的 `dialects.postgres`
+提供 `date_trunc` 日期函数。
+
 ### 8.5 Docker
 
 ```bash
@@ -402,6 +486,7 @@ curl -s http://127.0.0.1:3388/api/status -H "X-App-Token: <token>"
 - ✅ `MOCK_MODE=true` 下全链路可跑，不消耗任何额度；
 - ⚠️ `backend/static/` 与 `backend/data/` 为空，需按 8.3 / 8.4 生成；
 - ⚠️ 真实问答需要 Key；只配文本模型也能跑（选表自动降级为关键词）；
+- ✅ 不申请 Key 也能验证 2026 Agent 链路：`MOCK_MODE=true` 会走完整工具轨迹、语义层、trace、MCP、评测 harness；
 - ❌ 仓库不含任何线上实例的域名、账号、密钥与数据库快照。
 
 ---
@@ -427,6 +512,12 @@ curl -s http://127.0.0.1:3388/api/status -H "X-App-Token: <token>"
 | `GET` | `/api/history?session_id=` | 会话完整消息（含结构化 payload） |
 | `DELETE` | `/api/sessions/{id}` | 删除会话并级联清理 few-shot |
 | `POST` | `/api/index/rebuild` | 重建向量索引（带冷却与并发锁） |
+| `GET` | `/api/semantic` | 受治理指标目录、标准 JOIN、方言函数 |
+| `GET` | `/api/tools` | Agent 工具定义（可审计） |
+| `GET` | `/api/metrics` | 最近 N 条 trace 的 p50/p95、token、工具失败率 |
+| `GET` | `/api/traces/{trace_id}` | 单次查询的 span 明细 |
+| `GET/POST/DELETE` | `/api/memory` | 用户长期偏好：列出 / 写入 / 清空 |
+| `DELETE` | `/api/memory/{id}` | 删除单条偏好 |
 
 ### 9.2 提问示例
 
@@ -443,20 +534,42 @@ curl -N -X POST http://127.0.0.1:3388/api/query \
 ### 9.3 SSE 事件
 
 ```text
-event: session     data: {"session_id":"..."}
-event: stage       data: {"stage":"检索数据表"}          # 选表 / 生成 SQL / 执行 / 解读
-event: tables      data: {"tables":[{"name","cn","score"}]}
-event: sql         data: {"sql":"SELECT ..."}
-event: retry       data: {"attempt":1,"reason":"no such column: xxx"}
-event: result      data: {"columns":[],"rows":[],"truncated":false,"ms":12,"chart":{}}
+event: session     data: {"session_id":"...","trace_id":"...","agent_mode":"toolloop"}
+event: stage       data: {"key":"plan","label":"Agent 规划第 1 步"}
+event: tables      data: {"tables":[{"name","cn","score","matched_columns"}]}
+event: step        data: {"tool":"run_sql","ok":true,"ms":42.1,"args":{...},"error":""}
+event: sql         data: {"sql":"SELECT ...","attempt":1}
+event: retry       data: {"attempt":1,"error":"no such column: xxx"}
+event: result      data: {"columns":[],"rows":[],"truncated":false,"chart":{},"message_id":42,"trace_id":"..."}
 event: insight     data: {"summary":"...","followups":["..."]}
 event: guidance    data: {"kind":"refuse","reason":"...","suggestions":["..."]}
 event: error       data: {"message":"已脱敏的失败原因"}
-event: done        data: {"message_id":42}
+event: done        data: {"message_id":42,"trace_id":"...","agent_mode":"toolloop","steps":2}
 ```
 
 服务端每 15 秒发一次心跳注释行；客户端断开时生成器收到 `GeneratorExit`，
 由 `finally` 补偿写入 assistant 占位消息，不产生孤立 user 消息。
+
+### 9.4 MCP 接入
+
+`backend/mcp_server.py` 把同一套只读工具通过 stdio 暴露给任意 MCP host：
+
+```json
+{
+  "mcpServers": {
+    "text2sql": {
+      "command": "python",
+      "args": ["backend/mcp_server.py"],
+      "env": {"TEXT2SQL_DATA_DIR": "/abs/path/text2sql-agent/backend/data"}
+    }
+  }
+}
+```
+
+- 支持 `initialize` / `tools/list` / `tools/call` / `ping`（MCP 2025-06-18）；
+- 工具：`search_schema`、`run_sql`、`list_metrics`；不暴露写操作与记忆写入；
+- stdout 只输出 JSON-RPC，日志走 stderr，便于 host 直接拉起；
+- 与 Web Agent 共用 `clean_sql` + 只读连接，不存在「MCP 绕过闸门」的路径。
 
 ---
 
@@ -520,7 +633,8 @@ DOMAIN=sql.example.com sudo -E bash /tmp/text2sql-deploy/setup-edge.sh
 MOCK_MODE=true .venv/bin/python backend/scripts/selftest.py
 ```
 
-**90 项断言**，跑在独立临时数据目录上，不碰开发库、不消耗外部额度，结束自动清理。
+**109 项断言**，跑在独立临时数据目录上，不碰开发库、不消耗外部额度，结束自动清理。
+覆盖新增的 tool-calling 循环（假模型注入）、语义层、列级 linking、trace、记忆、MCP 握手、eval 冒烟。
 
 | 组 | 覆盖内容 |
 |---|---|
@@ -530,6 +644,10 @@ MOCK_MODE=true .venv/bin/python backend/scripts/selftest.py
 | 会话 | 结果与结论完整还原 / 拒答不污染多轮 / few-shot 表名白名单 / 级联删除 |
 | 迁移 | 老库缺 `payload` / `owner` 列时幂等迁移，历史消息仍可读 |
 | 稳健性 | 上游超时与 429 不触发改 SQL 重试 / 单轮预算耗尽有明确错误事件 |
+| 2026 Agent | 原生 tool_calls 假模型：search_schema → run_sql → DONE / 工具轨迹落库 |
+| 语义 / 数据 | YAML 指标目录 / 列级 matched_columns / Postgres 连接器（人工验证） |
+| MCP | initialize / tools/list / tools/call 只读执行（stdio 子进程） |
+| 评测 | golden set harness mock 冒烟，执行准确率与失败分类输出 |
 
 ### 11.2 已人工验证过的路径
 
@@ -538,11 +656,29 @@ MOCK_MODE=true .venv/bin/python backend/scripts/selftest.py
 - 移动端：抽屉开合、图表窄屏重排、iOS 安全区、横滑表格；
 - 反代：`certbot renew --dry-run` 通过，续期不再改写 nginx 配置。
 
-### 11.3 缺口
+### 11.3 执行准确率评测
 
-- **没有 CI**：`.github/workflows/` 为空，自测靠本地手动跑；
+```bash
+# 零额度冒烟（规则 SQL 基线，不代表模型质量）
+.venv/bin/python backend/scripts/eval.py --mode mock
+
+# 真实模型（会消耗额度；需 MODELSCOPE_API_KEY）
+.venv/bin/python backend/scripts/eval.py --mode real
+
+# BIRD dev 子集（需自行下载数据集）
+.venv/bin/python backend/scripts/eval.py --mode real --bird ~/BIRD/dev --limit 50
+```
+
+判定是**结果集一致**（默认忽略行序；参考 SQL 含 `ORDER BY LIMIT` 时按行序），
+输出 `eval/report.json` + `eval/report.md`，含 Execution Accuracy、分类准确率、
+逐条失败分类（`wrong_result` / `no_sql` / `sql_error` / `should_refuse`）与延迟。
+BIRD 模式按 `difficulty` 分组统计，可作为模型/提示词改动的回归基线。
+
+### 11.4 缺口
+
+- **CI 已覆盖后端自测 + 前端构建**（`.github/workflows/ci.yml`，零 API Key）；
 - **前端无单元测试**：只有人工回归；
-- **没有准确率基准**：50 表规模下未做执行正确率（Execution Accuracy）评测集；
+- **golden set 规模有限**：24 条核心业务问法 + 3 条拒答，适合回归不替代 BIRD；
 - **没有压测**：并发、长会话、大结果集的表现未量化。
 
 ---
@@ -550,12 +686,13 @@ MOCK_MODE=true .venv/bin/python backend/scripts/selftest.py
 ## 12. 已知限制与未验证事项
 
 1. **单账号**：鉴权是「一个账号 + HMAC token」，没有 RBAC；多人共用靠会话 owner 隔离，额度与审计按实例算；
-2. **SQLite 专用**：只读规则里 `PRAGMA` / `ATTACH` 是 SQLite 方言，换 Postgres/MySQL 需要另写一套；
-3. **50 表规模假设**：上千张表时 Top-K 会漏表，需要先选业务域再选表的分层检索；
-4. **没有语义层**：业务口径是写进 system prompt 的文本，不是可校验的指标定义（MDL / YAML）；
+2. **数据库方言**：已支持 SQLite / PostgreSQL；MySQL、BigQuery、Snowflake 还需补方言与只读连接器；
+3. **50 表规模假设**：上千张表时 Top-K 会漏表，需要先选业务域再选表的分层检索（列级 linking 只缓解不根治）；
+4. **语义层是轻量版**：YAML 指标 + 关键词匹配，不是 dbt metrics / MDL 那种带血缘、物化与审批的完整语义层；
 5. **不做执行计划优化**：只保证「一条 SELECT 能跑对」，不保证快；
 6. **洞察是单轮生成**：复杂归因（同比环比拆解）要靠下钻追问完成；
-7. **未验证**：高并发、超长会话（>50 轮）、超大结果集、生产级审计合规。
+7. **BIRD 基线待跑**：harness 与数据集加载器已就绪，本仓库未附带 BIRD 数据与真实模型跑分（避免默认消耗额度）；
+8. **未验证**：高并发、超长会话（>50 轮）、超大结果集、生产级审计合规。
 
 ---
 
@@ -589,11 +726,14 @@ text2sql-agent/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py            # 路由 / SSE / 静态托管 / 错误脱敏
-│   │   ├── agent.py           # Agent 编排：选表→生成→纠错→落库→推送
+│   │   ├── agent.py           # toolloop / workflow 双模编排
+│   │   ├── tools.py           # 工具注册表：search_schema / run_sql / metrics / memory
+│   │   ├── tracing.py         # trace / span / token / p50-p95 / 工具失败率
+│   │   ├── semantic.py        # YAML 语义层加载与 prompt 注入
 │   │   ├── guard.py           # 拒答护栏：规则前置 + 【拒答】协议解析
-│   │   ├── db.py              # 只读执行器：clean_sql / LIMIT / 截断 / 图表建议
-│   │   ├── schema_index.py    # 向量选表 + 关键词降级 + 外键闭包
-│   │   ├── store.py           # 会话 / 消息 / 幂等迁移 / few-shot 库
+│   │   ├── db.py              # SQLite / Postgres 只读执行器 + 图表建议
+│   │   ├── schema_index.py    # 向量选表 + 列级 linking + 外键闭包
+│   │   ├── store.py           # 会话 / 消息 / few-shot / 用户长期记忆
 │   │   ├── auth.py            # HMAC token / 登录限流 / token 撤销
 │   │   ├── llm.py             # OpenAI 兼容客户端 + SQL 提取 + 语言规则
 │   │   ├── embedding.py       # 向量模型客户端 + 伪向量（Mock）
@@ -603,11 +743,17 @@ text2sql-agent/
 │   │   ├── schema.py          # 50 张表定义（中文注释）
 │   │   ├── init_db.py         # 建库 + 模拟数据 + 元数据
 │   │   ├── build_index.py     # 构建向量索引
-│   │   └── selftest.py        # 90 项全链路自测
+│   │   ├── build_meta_pg.py   # Postgres 内省 → schema_meta.json
+│   │   ├── eval.py            # golden / BIRD 执行准确率评测
+│   │   └── selftest.py        # 109 项全链路自测
+│   ├── semantic/metrics.yaml  # 受治理指标层（唯一真相）
+│   ├── mcp_server.py          # MCP stdio server（只读工具）
 │   └── data/                  # 运行期生成（.gitignore）
 ├── frontend/src/              # Vue 3 源码
 │   └── components/            # ResultPanel / SchemaPanel / SqlBlock
 ├── deploy/                    # systemd / nginx / 隧道 / 证书 / 上线脚本
+├── eval/
+│   └── golden.yaml            # 26 条业务 golden + 3 条拒答
 ├── docs/
 │   ├── ENGINEERING-NOTES.md   # 设计取舍、加固清单、自测矩阵
 │   └── screenshots/
@@ -624,7 +770,7 @@ text2sql-agent/
 |---|---|
 | 认证 | 应用层登录页 + HMAC token（`X-App-Token`），签名绑定密码版本，改密/换 `SECRET_KEY` 后旧 token 立即失效 |
 | 限流 | 登录失败按 IP 计数并封禁；高消耗端点按 token+IP 滑动窗口；只信任反代覆盖后的远端 IP |
-| 只读 | 剥离字面量后校验；单语句；顶层 LIMIT；5s 超时；连接 `mode=ro` + `PRAGMA query_only=ON` |
+| 只读 | 剥离字面量后校验；单语句；顶层 LIMIT；5s 超时；SQLite `mode=ro` + `query_only`；Postgres 默认事务只读 + `statement_timeout` |
 | 越权 | 拦截写操作、`PRAGMA` / `ATTACH` / `VACUUM`、`randomblob` 资源耗尽、提示注入变体 |
 | 数据隔离 | 会话绑定 owner，列表/历史/删除均按身份过滤 |
 | 静态资源 | SPA 兜底路径做 `resolve()` 前缀校验，杜绝 `../` 读到 `.env` / `.secret_key` |
@@ -638,11 +784,16 @@ text2sql-agent/
 
 ## 16. Roadmap
 
-- [ ] 接入 Postgres / MySQL，按方言切换只读规则
-- [ ] 指标口径 YAML（轻量语义层）替代自由文本业务口径
+- [x] 接入 Postgres（只读事务 + `statement_timeout` + schema 内省）
+- [x] 指标口径 YAML（轻量语义层）替代自由文本业务口径
+- [x] 列级 schema linking（表级 Top-K 之外的列命中）
+- [x] 执行正确率评测（golden set + BIRD dev 加载器）
+- [x] Tool-calling Agent loop + MCP stdio server
+- [x] Trace 观测（OTel 语义兼容 JSONL + `/api/metrics`）
+- [x] 跨会话用户偏好记忆（显式写入 + 召回）
 - [ ] 千表规模的分层检索（先选业务域，再选表）
-- [ ] 执行正确率评测集（Execution Accuracy）与检索留出集（Recall@k）
-- [ ] CI：`MOCK_MODE` 自测 + 前端构建
+- [ ] MySQL / BigQuery / Snowflake 连接器
+- [x] CI：`MOCK_MODE` 自测 + 前端构建 + golden 回归
 - [ ] 结果集增量对比（同名查询跑两次看变化）
 
 ## License
