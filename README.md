@@ -138,16 +138,22 @@ Text-to-SQL 的 demo 半天能写完，但它离「能给别人用」差一段�
 
 <table align="center">
   <tr>
-    <td align="center"><img src="docs/screenshots/mobile.png" width="250" alt="移动端结果区"></td>
-    <td align="center"><img src="docs/screenshots/mobile-drawer.png" width="250" alt="移动端侧栏抽屉"></td>
-    <td align="center"><img src="docs/screenshots/login.png" width="360" alt="登录页"></td>
+    <td align="center"><img src="docs/screenshots/mobile.png" width="270" alt="移动端结果区"></td>
+    <td align="center"><img src="docs/screenshots/mobile-drawer.png" width="270" alt="移动端侧栏抽屉"></td>
   </tr>
   <tr>
     <td align="center"><sub>结果区（390×844）</sub></td>
     <td align="center"><sub>侧栏抽屉</sub></td>
-    <td align="center"><sub>应用层登录页</sub></td>
   </tr>
 </table>
+
+**公网部署时走应用层登录**，不依赖 nginx Basic（原生 401 弹窗在手机和预览面板里常不出现）：
+
+<p align="center">
+  <img src="docs/screenshots/login.png" width="800" alt="应用层登录页">
+</p>
+
+<p align="center"><sub>登录后 24 小时内免输；token 绑定密码版本，改密即失效</sub></p>
 
 ---
 
@@ -156,35 +162,32 @@ Text-to-SQL 的 demo 半天能写完，但它离「能给别人用」差一段�
 ### 4.1 总览
 
 ```text
-┌──────────────┐   SSE    ┌────────────────────────────────────────────────┐
-│ Vue 3 单页   │ ───────▶ │ FastAPI  POST /api/query                       │
-└──────────────┘          │   │                                            │
-                          │   ▼                                            │
-                          │ ① guard.check        无关/越权/注入 → guidance │
-                          │   │ 通过                                        │
-                          │   ▼                                            │
-                          │ ② embed(question)  ──▶ Qwen3-Embedding-8B      │
-                          │   ▼                                            │
-                          │ ③ SchemaIndex.search  Top-6                    │
-                          │     └ expand_with_fks 外键闭包                  │
-                          │   ▼                                            │
-                          │ ④ prompt_context  DDL/列说明/枚举/样例/口径     │
-                          │   ▼                                            │
-                          │ ⑤ LLM 生成 SQL  ◀── few-shot（表名白名单过滤）  │
-                          │   ▼                                            │
-                          │ ⑥ clean_sql 只读闸门 ──▶ execute_readonly      │
-                          │   │ 报错/0行/缺表 ——▶ 回灌重写（≤ MAX_LLM_CALLS）│
-                          │   ▼                                            │
-                          │ ⑦ 先落库（user+assistant 同事务）               │
-                          │   ▼                                            │
-                          │ ⑧ build_insight 结论 + 追问                    │
-                          │   ▼                                            │
-                          │ SSE: tables→sql→result→insight→done            │
-                          └────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-                        SQLite ecommerce.db (mode=ro, query_only)
-                        SQLite app.db (会话 / 消息 / few-shot, WAL)
+用户提问（中文）
+   │
+   ▼
+①  guard.check ─────── 无关 / 越权 / 注入 ──▶ guidance（0 次模型调用）
+   │ 通过
+   ▼
+②  embed(question) ──▶ Qwen3-Embedding-8B（1024 维）
+   │                    └─ 失败则降级：中文关键词选表
+   ▼
+③  SchemaIndex.search ──▶ Top-6 表
+   └─ expand_with_fks ──▶ 外键闭包补齐 JOIN 父表
+   ▼
+④  prompt_context ──▶ DDL / 列中文名 / 枚举值 / 样例行 / 业务口径
+   └─ store.similar ──▶ few-shot（按表名白名单过滤）
+   ▼
+⑤  llm.chat ──▶ 一条 SELECT（或【拒答】原因｜建议）
+   ▼
+⑥  clean_sql 只读闸门 ──▶ execute_readonly（mode=ro + query_only + 5s）
+   │  报错 / 0 行 / 缺表缺列
+   └──────────▶ 作为 Observation 回灌重写（≤ MAX_LLM_CALLS）
+   ▼
+⑦  先落库：user + assistant 同事务（payload 存完整回答）
+   ▼
+⑧  build_insight ──▶ 中文结论 + 3 条追问
+   ▼
+⑨  SSE 推送：session → stage → tables → sql → result → insight → done
 ```
 
 ### 4.2 一次提问的完整过程
