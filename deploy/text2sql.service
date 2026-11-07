@@ -1,0 +1,37 @@
+# FastAPI systemd 单元（应用服务器，公网不可直连，只监听 127.0.0.1）
+#
+# 本模板统一把项目放在 /opt/text2sql-agent；实际路径不同时请同步改
+# WorkingDirectory / EnvironmentFile / ExecStart 三处。
+#
+# 安装：
+#   sudo PROJ=/opt/text2sql-agent bash deploy/prepare-user.sh   # 建低权限账号并授权
+#   sudo cp deploy/text2sql.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now text2sql.service
+#   journalctl -u text2sql.service -f
+#
+# ⚠️ 若未执行 prepare-user.sh 创建 text2sql 账号，先把下面 User/Group 两行注释掉，
+#    否则服务会因权限不足起不来。
+[Unit]
+Description=Text-to-SQL Agent (FastAPI + Vue)
+After=network-online.target
+Wants=network-online.target
+StartLimitBurst=5
+StartLimitIntervalSec=120
+
+[Service]
+Type=simple
+User=text2sql
+Group=text2sql
+WorkingDirectory=/opt/text2sql-agent
+EnvironmentFile=/opt/text2sql-agent/.env
+ExecStart=/opt/text2sql-agent/.venv/bin/python -m uvicorn app.main:app \
+  --app-dir backend --host 127.0.0.1 --port 3388 --no-access-log
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

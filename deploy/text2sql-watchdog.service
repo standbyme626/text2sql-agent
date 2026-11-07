@@ -1,0 +1,6 @@
+[Unit]
+Description=Text2SQL service/tunnel health watchdog
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/text2sql-health-watchdog.sh

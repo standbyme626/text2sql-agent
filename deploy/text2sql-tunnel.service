@@ -1,0 +1,34 @@
+# 应用服务器 → 边缘服务器的 SSH 反向隧道
+# 把本机 127.0.0.1:3388 映射到边缘服务器的 127.0.0.1:3388，供 nginx 反代，
+# 这样应用服务器不需要任何入站端口 / 公网 IP。
+#
+# 依赖：~/.ssh/config 里已有免密可用的 Host 别名（默认 edge-tunnel，可在
+#       /etc/default/text2sql-tunnel 里用 EDGE_SSH=xxx 覆盖）
+# ⚠️ -R 目标必须写 127.0.0.1，不要写 localhost
+[Unit]
+Description=Text2SQL reverse tunnel to edge server
+After=network-online.target text2sql.service
+Wants=network-online.target
+StartLimitBurst=5
+StartLimitIntervalSec=120
+
+[Service]
+Type=simple
+User=text2sql
+Group=text2sql
+Environment=EDGE_SSH=edge-tunnel
+Environment=PORT=3388
+EnvironmentFile=-/etc/default/text2sql-tunnel
+ExecStart=/usr/bin/ssh -o BatchMode=yes \
+  -o ConnectTimeout=10 -o ConnectionAttempts=3 \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -o ExitOnForwardFailure=yes -N \
+  -R 127.0.0.1:${PORT}:127.0.0.1:${PORT} ${EDGE_SSH}
+Restart=always
+RestartSec=10
+RestartPreventExitStatus=255
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

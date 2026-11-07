@@ -1,0 +1,2 @@
+# 前端构建产物会拷到这里，由后端直接托管。
+# 构建方式见 README「分步执行」：cd frontend && npm install && npm run build

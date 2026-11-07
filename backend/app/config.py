@@ -1,0 +1,166 @@
+# -*- coding: utf-8 -*-
+"""全局配置：全部来自项目根 .env，密钥不落代码、不进版本库。"""
+from __future__ import annotations
+
+import os
+import secrets
+from dataclasses import dataclass
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+APP_DIR = Path(__file__).resolve().parent          # backend/app
+BACKEND_DIR = APP_DIR.parent                       # backend
+PROJECT_DIR = BACKEND_DIR.parent                   # text2sql-agent
+DATA_DIR = Path(os.getenv("TEXT2SQL_DATA_DIR", str(BACKEND_DIR / "data")))
+STATIC_DIR = Path(os.getenv("TEXT2SQL_STATIC_DIR", str(BACKEND_DIR / "static")))
+
+load_dotenv(PROJECT_DIR / ".env", override=False)
+
+
+def _bool(key: str, default: bool = False) -> bool:
+    return os.getenv(key, str(default)).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _int(key: str, default: int) -> int:
+    try:
+        return int(os.getenv(key, str(default)))
+    except ValueError:
+        return default
+
+
+def _clamped(key: str, default: int, lo: int, hi: int) -> int:
+    """所有次数/上限类配置都钳制，避免误配造成空循环或额度失控。"""
+    return max(lo, min(hi, _int(key, default)))
+
+
+def _secure_dir() -> None:
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        os.chmod(DATA_DIR, 0o700)
+    except OSError:
+        pass
+
+
+def _secret_key() -> str:
+    """优先用 .env 的 SECRET_KEY，否则原子创建一次并持久化（权限 600）。"""
+    env = os.getenv("SECRET_KEY", "").strip()
+    if env:
+        return env
+    _secure_dir()
+    p = DATA_DIR / ".secret_key"
+    if p.exists():
+        return p.read_text(encoding="utf-8").strip()
+    key = secrets.token_urlsafe(48)
+    try:
+        fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(key)
+    except FileExistsError:
+        return p.read_text(encoding="utf-8").strip()
+    try:
+        os.chmod(p, 0o600)
+    except OSError:
+        pass
+    return key
+
+
+@dataclass(frozen=True)
+class Settings:
+    # --- 服务 ---
+    HOST: str = os.getenv("HOST", "127.0.0.1")
+    PORT: int = _int("PORT", 3388)
+    PUBLIC_BASE_PATH: str = os.getenv("PUBLIC_BASE_PATH", "")
+    # 生产显式配站点域名；留空 = 同源，不再默认允许任意来源
+    CORS_ORIGINS: str = os.getenv("CORS_ORIGINS", "")
+
+    # --- 鉴权（公网暴露必填） ---
+    AUTH_USER: str = os.getenv("AUTH_USER", "admin")
+    AUTH_PASSWORD: str = os.getenv("AUTH_PASSWORD", "")
+    SECRET_KEY: str = _secret_key()
+    TOKEN_TTL_HOURS: int = _clamped("TOKEN_TTL_HOURS", 24, 1, 168)
+
+    # --- 文本大模型：魔搭 ModelScope ---
+    LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "https://api-inference.modelscope.cn/v1").rstrip("/")
+    LLM_API_KEY: str = os.getenv("MODELSCOPE_API_KEY", "")
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "deepseek-ai/DeepSeek-V4.1-Flash-1017")
+    LLM_TIMEOUT: int = _clamped("LLM_TIMEOUT", 120, 10, 300)
+    LLM_MAX_TOKENS: int = _clamped("LLM_MAX_TOKENS", 4096, 256, 8192)
+    LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.1"))
+
+    # --- 向量模型：硅基流动 SiliconFlow ---
+    EMB_BASE_URL: str = os.getenv("EMB_BASE_URL", "https://api.siliconflow.cn/v1").rstrip("/")
+    EMB_API_KEY: str = os.getenv("SILICONFLOW_API_KEY", "")
+    EMB_MODEL: str = os.getenv("EMB_MODEL", "Qwen/Qwen3-Embedding-8B")
+    EMB_DIM: int = _clamped("EMB_DIM", 1024, 8, 4096)
+    EMB_TIMEOUT: int = _clamped("EMB_TIMEOUT", 60, 5, 180)
+
+    # --- Agent 参数 ---
+    TOP_K_TABLES: int = _clamped("TOP_K_TABLES", 6, 1, 20)
+    FEWSHOT_K: int = _clamped("FEWSHOT_K", 2, 0, 6)
+    MAX_SQL_RETRY: int = _clamped("MAX_SQL_RETRY", 2, 0, 5)
+    MAX_RESULT_ROWS: int = _clamped("MAX_RESULT_ROWS", 500, 10, 5000)
+    SQL_TIMEOUT_MS: int = _clamped("SQL_TIMEOUT_MS", 5000, 200, 60000)
+    HISTORY_TURNS: int = _clamped("HISTORY_TURNS", 6, 1, 20)
+    MAX_LLM_CALLS: int = _clamped("MAX_LLM_CALLS", 5, 1, 20)  # 单轮 LLM 硬预算
+    FK_EXPAND_MAX: int = _clamped("FK_EXPAND_MAX", 3, 0, 10)  # 外键闭包最多补几张表
+    AUTO_INSIGHT: bool = _bool("AUTO_INSIGHT", True)
+    FOLLOWUP_COUNT: int = _clamped("FOLLOWUP_COUNT", 3, 0, 6)
+    INSIGHT_MAX_TOKENS: int = _clamped("INSIGHT_MAX_TOKENS", 500, 100, 2000)
+    EMPTY_RESULT_RETRY: bool = _bool("EMPTY_RESULT_RETRY", True)
+    GUARD_ENABLED: bool = _bool("GUARD_ENABLED", True)
+    GUARD_SUGGESTIONS: int = _clamped("GUARD_SUGGESTIONS", 3, 0, 6)
+
+    # --- 限流 / 资源 ---
+    RATE_LIMIT_ENABLED: bool = _bool("RATE_LIMIT_ENABLED", True)
+    RATE_LIMIT_PER_MIN: int = _clamped("RATE_LIMIT_PER_MIN", 40, 1, 1000)
+    REBUILD_COOLDOWN: int = _clamped("REBUILD_COOLDOWN", 300, 0, 86400)
+    MAX_QA_HISTORY: int = _clamped("MAX_QA_HISTORY", 400, 50, 10000)
+    MAX_BODY_BYTES: int = _clamped("MAX_BODY_BYTES", 1_000_000, 10000, 10_000_000)
+    SSE_HEARTBEAT_SEC: int = _clamped("SSE_HEARTBEAT_SEC", 15, 3, 60)
+
+    # --- 开关 ---
+    MOCK_MODE: bool = _bool("MOCK_MODE", False)   # 不调用任何外部 API，用于本地自测
+    # 无索引/索引损坏且允许自动构建时，在 lifespan 里后台重建（只发生在异常场景）
+    AUTO_BUILD_INDEX: bool = _bool("AUTO_BUILD_INDEX", True)
+    # 仅容器/内网调试时可置 1，跳过「必须鉴权」检查；生产环境不要开
+    ALLOW_INSECURE: bool = _bool("ALLOW_INSECURE", False)
+
+    @property
+    def db_path(self) -> Path:
+        return DATA_DIR / "ecommerce.db"
+
+    @property
+    def meta_path(self) -> Path:
+        return DATA_DIR / "schema_meta.json"
+
+    @property
+    def index_path(self) -> Path:
+        return DATA_DIR / "schema_index.json"
+
+    @property
+    def app_db_path(self) -> Path:
+        return DATA_DIR / "app.db"
+
+    @property
+    def auth_enabled(self) -> bool:
+        return bool(self.AUTH_PASSWORD)
+
+    @property
+    def password_version(self) -> str:
+        """改密码 / 轮换 SECRET_KEY 后，已签发的旧 token 立即失效。"""
+        import hashlib
+        return hashlib.sha256(
+            (self.AUTH_PASSWORD + "|" + self.SECRET_KEY).encode()
+        ).hexdigest()[:8]
+
+    @property
+    def llm_ready(self) -> bool:
+        return self.MOCK_MODE or bool(self.LLM_API_KEY)
+
+    @property
+    def emb_ready(self) -> bool:
+        return self.MOCK_MODE or bool(self.EMB_API_KEY)
+
+
+settings = Settings()

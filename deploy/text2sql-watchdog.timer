@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Text2SQL watchdog every 2 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Unit=text2sql-watchdog.service
+
+[Install]
+WantedBy=timers.target

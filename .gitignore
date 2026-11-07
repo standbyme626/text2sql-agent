@@ -1,0 +1,42 @@
+# ---------- 密钥与本地配置（绝不入库） ----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.secret_key
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# ---------- Node ----------
+node_modules/
+frontend/dist/
+npm-debug.log*
+
+# ---------- 运行期数据（首次启动 / 脚本生成） ----------
+backend/data/*.db
+backend/data/*.db-shm
+backend/data/*.db-wal
+backend/data/.secret_key
+backend/data/schema_index.json
+backend/data/schema_meta.json
+
+# ---------- 前端构建产物（由 backend 托管，构建后生成） ----------
+backend/static/*
+!backend/static/.gitkeep
+
+# ---------- 编辑器 / 系统 ----------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- 本地私有脚本 ----------
+deploy/local-*.sh

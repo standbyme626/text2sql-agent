@@ -1,0 +1,22 @@
+services:
+  text2sql:
+    build: .
+    container_name: text2sql-agent
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # 容器内必须监听 0.0.0.0 才能被端口映射访问；
+      # 宿主机侧只绑 127.0.0.1，公网入口交给反代 nginx 或 SSH 反向隧道。
+      HOST: 0.0.0.0
+      PORT: 3388
+    ports:
+      - "127.0.0.1:3388:3388"
+    volumes:
+      - ./backend/data:/app/backend/data
+      - ./backend/static:/app/backend/static:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3388/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
