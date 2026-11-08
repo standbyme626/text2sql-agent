@@ -27,7 +27,7 @@
 > 曾在公网域名上以「应用层登录 + 只读闸门」对外提供过一段时间，单账号使用；
 > 仓库不含数据库文件、向量索引与任何密钥，首次运行按第 8 节初始化，约 1 分钟建好 50 张表。
 
-**50 张表** · **51,899 行** · **tool-calling Agent** · **5 个工具 + MCP** · **130 项自测** · **单轮 ≤ 6 次 LLM 调用**
+**50 张表** · **51,899 行** · **tool-calling Agent** · **5 个工具 + MCP** · **131 项自测** · **单轮 ≤ 6 次 LLM 调用**
 
 ---
 
@@ -108,7 +108,7 @@ Text-to-SQL 的 demo 半天能写完，但它离「能给别人用」差一段�
 | **SQL 生成** — 只允许一条 SELECT；无法回答时走 `【拒答】原因｜建议` 协议 | `llm.py::chat`、`extract_sql` |
 | **只读闸门** — 剥离字面量后校验关键字/注释/多语句；强制顶层 LIMIT；5s 超时 | `db.py::clean_sql`、`_top_level_limit` |
 | **双层自纠正** — toolloop 内模型自主重试；workflow 报错/0 行/缺表回灌；单轮硬预算 | `agent.py::_tool_loop`、`_workflow_loop` |
-| **自动解读** — 结论 + 追问合并为 1 次轻量调用，只喂前 8 行；0 行/截断走专用提示 | `agent.py::build_insight` |
+| **自动解读** — 默认自动生成结论 + 追问；AI 不可用时回退确定性数据摘要，结果区不留空 | `agent.py::build_insight`、`_fallback_insight` |
 | **拒答引导** — 规则前置拦截无关/越权/注入；模糊问题给可点击的正确问法 | `guard.py::check`、`parse_refusal` |
 | **会话还原** — 完整回答结构化落库（`payload`），切走再切回表格/图表/结论都在 | `store.py::add_answer`、`get_history` |
 | **鉴权** — 中文登录页 + HMAC token，签名绑定密码版本；登录失败按 IP 限流 | `auth.py::make_token`、`rate_ok` |
@@ -635,7 +635,7 @@ DOMAIN=sql.example.com sudo -E bash /tmp/text2sql-deploy/setup-edge.sh
 MOCK_MODE=true .venv/bin/python backend/scripts/selftest.py
 ```
 
-**130 项断言**，跑在独立临时数据目录上，不碰开发库、不消耗外部额度，结束自动清理。
+**131 项断言**，跑在独立临时数据目录上，不碰开发库、不消耗外部额度，结束自动清理。
 覆盖新增的 tool-calling 循环（假模型注入）、语义层、列级 linking、trace、记忆、MCP 握手、eval 冒烟。
 
 | 组 | 覆盖内容 |
@@ -747,7 +747,7 @@ text2sql-agent/
 │   │   ├── build_index.py     # 构建向量索引
 │   │   ├── build_meta_pg.py   # Postgres 内省 → schema_meta.json
 │   │   ├── eval.py            # golden / BIRD 执行准确率评测
-│   │   └── selftest.py        # 130 项全链路自测
+│   │   └── selftest.py        # 131 项全链路自测
 │   ├── semantic/metrics.yaml  # 受治理指标层（唯一真相）
 │   ├── mcp_server.py          # MCP stdio server（只读工具）
 │   └── data/                  # 运行期生成（.gitignore）

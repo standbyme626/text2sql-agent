@@ -8,12 +8,12 @@
         {{ showChart ? '收起图表' : '查看图表' }}</button>
       <button @click="exportCsv">导出 CSV</button>
       <button @click="explain" :disabled="explaining">
-        {{ explaining ? '解读中…' : (insight ? '重新解读' : 'AI 解读') }}
+        {{ explaining ? '解读中…' : (insight && !insight.fallback ? '重新解读' : 'AI 解读') }}
       </button>
     </div>
 
     <div v-if="insight && insight.summary" class="insight-box">
-      <div class="insight-label"><span class="insight-dot"></span>结论</div>
+      <div class="insight-label"><span class="insight-dot"></span>{{ insight.fallback ? '数据摘要（AI 暂不可用）' : '结论' }}</div>
       <div class="insight-text">{{ insight.summary }}</div>
       <div class="followups" v-if="insight.followups && insight.followups.length">
         <span class="followups-label">继续追问</span>

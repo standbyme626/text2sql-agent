@@ -41,9 +41,9 @@ sys.path.insert(0, str(BACKEND))
 from fastapi.testclient import TestClient  # noqa: E402
 from app import auth, db, guard, llm  # noqa: E402
 from app.agent import (_agent_call_budget, _dimension_stacked,
-                       _dropped_constraints, _followup_dimension_hint,
-                       _is_empty_result, build_messages, is_chinese,
-                       parse_insight)  # noqa: E402
+                       _dropped_constraints, _fallback_insight,
+                       _followup_dimension_hint, _is_empty_result,
+                       build_messages, is_chinese, parse_insight)  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.embedding import cosine  # noqa: E402
 from app.main import app  # noqa: E402
@@ -482,6 +482,13 @@ def main():
               and "默认只看已完成订单" in mm_msgs[0]["content"])
         check("洞察提示含金额单位规则",
               "除以 10000" in __import__("app.agent", fromlist=["agent"]).INSIGHT_SYSTEM)
+        fb1 = _fallback_insight({"row_count": 3, "columns": ["品类", "销售额"],
+                                 "rows": [[1, 2]], "truncated": False})
+        fb0 = _fallback_insight({"row_count": 0, "columns": ["n"], "rows": [],
+                                 "truncated": False})
+        check("AI 不可用有数据摘要兜底",
+              fb1.get("fallback") is True and "3 行" in fb1["summary"]
+              and "未查到" in fb0["summary"])
         check("洞察预留 1 次调用预算",
               _agent_call_budget() == settings.MAX_LLM_CALLS - 1)
         check("单行全 NULL 视为空结果",

@@ -425,6 +425,25 @@ def _agent_call_budget() -> int:
     return max(1, settings.MAX_LLM_CALLS - reserve)
 
 
+def _fallback_insight(res: dict) -> dict:
+    """AI 不可用/预算不足时的确定性数据摘要，保证结果区永远有「结论」。"""
+    cols = "、".join((res.get("columns") or [])[:6])
+    if _is_empty_result(res):
+        summary = "未查到符合条件的数据；请放宽时间范围、核对枚举值，或换一个维度再试。"
+    else:
+        summary = (f"查询返回 {res.get('row_count', 0)} 行结果"
+                   + (f"，字段：{cols}" if cols else "")
+                   + ("；结果已按上限截断，不能据此计算全量占比。"
+                      if res.get("truncated") else "。"))
+        summary += "AI 解读暂不可用，可点「重试 AI 解读」生成业务结论。"
+    return {
+        "text": summary,
+        "summary": summary,
+        "followups": FALLBACK_FOLLOWUPS[:settings.FOLLOWUP_COUNT],
+        "fallback": True,
+    }
+
+
 def _is_empty_result(res: dict) -> bool:
     """0 行，或单行聚合结果全为 NULL（无数据时的 SUM/COUNT 形态）。"""
     if res.get("row_count") == 0:
@@ -522,21 +541,31 @@ async def _finalize(state: dict, sid: str, question: str, res: dict):
             )
             state["llm_calls"] += 1
             if not insight.get("summary"):
-                yield {"type": "insight_warning", "message": "结论为空，可点「重新解读」重试"}
-                store.patch_message(mid, payload_patch={"insight": None})
+                fb = _fallback_insight(res)
+                store.patch_message(mid, content=fb["summary"],
+                                    payload_patch={"insight": fb})
+                yield {"type": "insight", **fb, "auto": True}
+                yield {"type": "notice",
+                       "message": "AI 结论为空，已先显示数据摘要；可点「重试 AI 解读」。"}
             else:
                 store.patch_message(mid, content=insight["summary"],
                                     payload_patch={"insight": insight})
                 yield {"type": "insight", **insight, "auto": True}
         except Exception:  # noqa: BLE001
             logger.exception("自动生成结论失败")
-            store.patch_message(mid, payload_patch={"insight": None})
-            yield {"type": "insight_warning",
-                   "message": "结论生成失败（不影响查询结果），可点「重新解读」重试"}
+            fb = _fallback_insight(res)
+            store.patch_message(mid, content=fb["summary"],
+                                payload_patch={"insight": fb})
+            yield {"type": "insight", **fb, "auto": True}
+            yield {"type": "notice",
+                   "message": "AI 解读暂时不可用，已先显示数据摘要；可点「重试 AI 解读」。"}
     elif settings.AUTO_INSIGHT:
-        yield {"type": "insight_warning",
-               "message": "本轮模型调用预算已用尽，结果已返回；可点「AI 解读」生成结论。"}
-        store.patch_message(mid, payload_patch={"auto_insight": False})
+        fb = _fallback_insight(res)
+        store.patch_message(mid, content=fb["summary"],
+                            payload_patch={"insight": fb})
+        yield {"type": "insight", **fb, "auto": True}
+        yield {"type": "notice",
+               "message": "本轮模型预算已用尽，已显示数据摘要；可点「重试 AI 解读」。"}
     else:
         yield {"type": "insight_disabled",
                "message": "自动结论已关闭，可点「AI 解读」手动生成。"}

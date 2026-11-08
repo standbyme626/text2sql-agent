@@ -132,7 +132,7 @@ SSE 生成器在客户端断开时会收到 `GeneratorExit`（属于 `BaseExcept
 
 ## 3. 自测矩阵
 
-`backend/scripts/selftest.py` 共 130 项断言，跑在**独立临时数据目录**上，
+`backend/scripts/selftest.py` 共 131 项断言，跑在**独立临时数据目录**上，
 不碰开发库、不消耗真实 API 额度（`MOCK_MODE`），结束自动清理。
 
 | 组 | 覆盖内容 |
@@ -220,3 +220,5 @@ schema 元数据由 `build_meta_pg.py` 从 `information_schema` + `pg_class` 内
 | 扩表 `search_schema(query)` 用原始问题向量 | 工具复用了首轮 embedding | 查询词变化时重新 embedding |
 
 - 复杂查询把 5 次 LLM 预算用完后不再生成结论 → `_agent_call_budget()` 预留 1 次给自动洞察，`MAX_LLM_CALLS` 默认 6；洞察预览行数 20→50，并明确「预览行数≠总行数」。
+
+- **产品逻辑：回答优先**。结论默认自动展示，不要求用户先点「AI 解读」；AI 失败/预算不足时展示确定性「数据摘要（AI 暂不可用）」，按钮变为「AI 解读」可重试。表格、图表、SQL 都是证据，不是唯一答案。
