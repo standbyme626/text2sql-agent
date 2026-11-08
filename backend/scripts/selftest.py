@@ -40,9 +40,10 @@ sys.path.insert(0, str(BACKEND))
 
 from fastapi.testclient import TestClient  # noqa: E402
 from app import auth, db, guard, llm  # noqa: E402
-from app.agent import (_dimension_stacked, _dropped_constraints,
-                       _followup_dimension_hint, _is_empty_result,
-                       build_messages, is_chinese, parse_insight)  # noqa: E402
+from app.agent import (_agent_call_budget, _dimension_stacked,
+                       _dropped_constraints, _followup_dimension_hint,
+                       _is_empty_result, build_messages, is_chinese,
+                       parse_insight)  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.embedding import cosine  # noqa: E402
 from app.main import app  # noqa: E402
@@ -481,6 +482,8 @@ def main():
               and "默认只看已完成订单" in mm_msgs[0]["content"])
         check("洞察提示含金额单位规则",
               "除以 10000" in __import__("app.agent", fromlist=["agent"]).INSIGHT_SYSTEM)
+        check("洞察预留 1 次调用预算",
+              _agent_call_budget() == settings.MAX_LLM_CALLS - 1)
         check("单行全 NULL 视为空结果",
               _is_empty_result({"row_count": 1, "rows": [[None]]})
               and not _is_empty_result({"row_count": 1, "rows": [[0]]})

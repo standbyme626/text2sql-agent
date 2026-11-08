@@ -132,7 +132,7 @@ SSE 生成器在客户端断开时会收到 `GeneratorExit`（属于 `BaseExcept
 
 ## 3. 自测矩阵
 
-`backend/scripts/selftest.py` 共 129 项断言，跑在**独立临时数据目录**上，
+`backend/scripts/selftest.py` 共 130 项断言，跑在**独立临时数据目录**上，
 不碰开发库、不消耗真实 API 额度（`MOCK_MODE`），结束自动清理。
 
 | 组 | 覆盖内容 |
@@ -218,3 +218,5 @@ schema 元数据由 `build_meta_pg.py` 从 `information_schema` + `pg_class` 内
 | 说「记住...」后没有 SQL，Agent 报「无法产出结果」 | memory 写入不是查询结果，旧循环只认 SQL | 记忆写入后返回 notice 确认并落库 |
 | ModelScope 余额不足显示成「限流，请稍后」 | 429 未区分余额不足与 RPM 限流 | 解析 429 正文，余额不足直接提示充值/切换模型；429 尊重 Retry-After |
 | 扩表 `search_schema(query)` 用原始问题向量 | 工具复用了首轮 embedding | 查询词变化时重新 embedding |
+
+- 复杂查询把 5 次 LLM 预算用完后不再生成结论 → `_agent_call_budget()` 预留 1 次给自动洞察，`MAX_LLM_CALLS` 默认 6；洞察预览行数 20→50，并明确「预览行数≠总行数」。

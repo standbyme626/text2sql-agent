@@ -27,7 +27,7 @@
 > 曾在公网域名上以「应用层登录 + 只读闸门」对外提供过一段时间，单账号使用；
 > 仓库不含数据库文件、向量索引与任何密钥，首次运行按第 8 节初始化，约 1 分钟建好 50 张表。
 
-**50 张表** · **51,899 行** · **tool-calling Agent** · **5 个工具 + MCP** · **129 项自测** · **单轮 ≤ 5 次 LLM 调用**
+**50 张表** · **51,899 行** · **tool-calling Agent** · **5 个工具 + MCP** · **130 项自测** · **单轮 ≤ 6 次 LLM 调用**
 
 ---
 
@@ -274,7 +274,7 @@ Top-6 只按语义选出，很容易漏掉 JOIN 需要的维表。`expand_with_f
    └─ 成功            ──▶ 落库 + 解读
 ```
 
-三重约束防止失控：`MAX_SQL_RETRY=2`（最多 3 次生成）、`MAX_LLM_CALLS=5`（单轮硬预算）、
+三重约束防止失控：`MAX_SQL_RETRY=2`（最多 3 次生成）、`MAX_LLM_CALLS=6`（单轮硬预算，含 1 次洞察）、
 **429/超时不进「改 SQL」重试**（重试也不会成功，只会白烧额度）。
 
 > v3.0 起默认走 toolloop：模型看到 `run_sql` 的报错 Observation 后自行决定重写、扩表或停手，
@@ -323,12 +323,12 @@ metrics:
 | `FK_EXPAND_MAX` | 3 | 同上，外键闭包最多补几张 |
 | `FEWSHOT_K` | 2 | 注入几条相似历史问答 |
 | `MAX_SQL_RETRY` | 2 | 报错重写次数（钳制 0~5） |
-| `MAX_LLM_CALLS` | 5 | 单轮 LLM 调用硬预算（钳制 1~20） |
+| `MAX_LLM_CALLS` | 6 | 单轮 LLM 调用硬预算（含 1 次洞察；钳制 1~20） |
 | `MAX_RESULT_ROWS` | 500 | 单次返回上限，超出标记 `truncated` |
 | `SQL_TIMEOUT_MS` | 5000 | 单条 SQL 超时 |
 | `EMPTY_RESULT_RETRY` | `true` | 0 行是否回灌重试 |
 | `HISTORY_TURNS` | 6 | 注入几轮历史对话 |
-| `INSIGHT_PREVIEW_ROWS` | 20 | 洞察调用最多喂多少行结果（防止把前 8 行当全量） |
+| `INSIGHT_PREVIEW_ROWS` | 50 | 洞察调用最多喂多少行结果（防止把预览行数当总行数） |
 | `AGENT_MODE` | `toolloop` | `toolloop` / `workflow` |
 | `MAX_AGENT_STEPS` | 6 | Agent 最多规划步数（钳制 1~20） |
 | `MAX_TOOL_SQL` | 4 | 单轮最多执行几次 SQL |
@@ -635,7 +635,7 @@ DOMAIN=sql.example.com sudo -E bash /tmp/text2sql-deploy/setup-edge.sh
 MOCK_MODE=true .venv/bin/python backend/scripts/selftest.py
 ```
 
-**129 项断言**，跑在独立临时数据目录上，不碰开发库、不消耗外部额度，结束自动清理。
+**130 项断言**，跑在独立临时数据目录上，不碰开发库、不消耗外部额度，结束自动清理。
 覆盖新增的 tool-calling 循环（假模型注入）、语义层、列级 linking、trace、记忆、MCP 握手、eval 冒烟。
 
 | 组 | 覆盖内容 |
@@ -747,7 +747,7 @@ text2sql-agent/
 │   │   ├── build_index.py     # 构建向量索引
 │   │   ├── build_meta_pg.py   # Postgres 内省 → schema_meta.json
 │   │   ├── eval.py            # golden / BIRD 执行准确率评测
-│   │   └── selftest.py        # 129 项全链路自测
+│   │   └── selftest.py        # 130 项全链路自测
 │   ├── semantic/metrics.yaml  # 受治理指标层（唯一真相）
 │   ├── mcp_server.py          # MCP stdio server（只读工具）
 │   └── data/                  # 运行期生成（.gitignore）

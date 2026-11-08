@@ -115,12 +115,12 @@ class Settings:
     MAX_RESULT_ROWS: int = _clamped("MAX_RESULT_ROWS", 500, 10, 5000)
     SQL_TIMEOUT_MS: int = _clamped("SQL_TIMEOUT_MS", 5000, 200, 60000)
     HISTORY_TURNS: int = _clamped("HISTORY_TURNS", 6, 1, 20)
-    MAX_LLM_CALLS: int = _clamped("MAX_LLM_CALLS", 5, 1, 20)  # 单轮 LLM 硬预算
+    MAX_LLM_CALLS: int = _clamped("MAX_LLM_CALLS", 6, 1, 20)  # 单轮 LLM 硬预算（含 1 次洞察）
     FK_EXPAND_MAX: int = _clamped("FK_EXPAND_MAX", 3, 0, 10)  # 外键闭包最多补几张表
     AUTO_INSIGHT: bool = _bool("AUTO_INSIGHT", True)
     FOLLOWUP_COUNT: int = _clamped("FOLLOWUP_COUNT", 3, 0, 6)
     INSIGHT_MAX_TOKENS: int = _clamped("INSIGHT_MAX_TOKENS", 1200, 100, 3000)
-    INSIGHT_PREVIEW_ROWS: int = _clamped("INSIGHT_PREVIEW_ROWS", 20, 5, 50)
+    INSIGHT_PREVIEW_ROWS: int = _clamped("INSIGHT_PREVIEW_ROWS", 50, 5, 100)
     EMPTY_RESULT_RETRY: bool = _bool("EMPTY_RESULT_RETRY", True)
     GUARD_ENABLED: bool = _bool("GUARD_ENABLED", True)
     GUARD_SUGGESTIONS: int = _clamped("GUARD_SUGGESTIONS", 3, 0, 6)

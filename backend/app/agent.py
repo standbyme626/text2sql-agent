@@ -371,8 +371,8 @@ async def build_insight(question: str, sql: str, columns: list[str], rows: list[
         {"role": "user", "content": (
             f"用户问题：{question}\nSQL：{sql}\n"
             f"返回行数：{len(rows)}{'（已截断，非全量）' if truncated else ''}\n"
-            f"结果预览（共 {len(rows)} 行，仅展示前 {n_preview} 行；"
-            f"不要假设未展示的行不存在）：{preview}\n"
+            f"结果预览（共 {len(rows)} 行，展示前 {n_preview} 行；"
+            f"不要把预览行数当总行数，也不要假设未展示的行不存在）：{preview}\n"
             f"请输出 JSON，followups 严格 {settings.FOLLOWUP_COUNT} 条。"
         )},
     ]
@@ -417,6 +417,12 @@ async def explain_result(question: str, sql: str,
 
 def _fail(reason: str) -> dict:
     return {"type": "error", "message": reason}
+
+
+def _agent_call_budget() -> int:
+    """给自动洞察预留 1 次调用，避免 Agent 把预算用完后没有结论。"""
+    reserve = 1 if settings.AUTO_INSIGHT else 0
+    return max(1, settings.MAX_LLM_CALLS - reserve)
 
 
 def _is_empty_result(res: dict) -> bool:
@@ -574,8 +580,9 @@ async def _tool_loop(state: dict, sid: str):
                             state["boost"], state["qvec"])
     messages = state["messages"]
     zero_retried = False
+    budget = _agent_call_budget()
     for step_i in range(settings.MAX_AGENT_STEPS):
-        if state["llm_calls"] >= settings.MAX_LLM_CALLS:
+        if state["llm_calls"] >= budget:
             break
         yield {"type": "stage", "key": "plan",
                "label": f"Agent 规划第 {step_i + 1} 步"}
@@ -757,7 +764,7 @@ async def _tool_loop(state: dict, sid: str):
         if state.get("last_result"):
             if (_is_empty_result(state["last_result"])
                     and settings.EMPTY_RESULT_RETRY and not zero_retried
-                    and state["llm_calls"] < settings.MAX_LLM_CALLS):
+                    and state["llm_calls"] < budget):
                 zero_retried = True
                 yield {"type": "retry", "attempt": state.get("attempt", 1),
                        "error": "查询返回 0 行，正在核对过滤条件并放宽重试"}
@@ -789,7 +796,7 @@ async def _tool_loop(state: dict, sid: str):
                                         + tools.observation(result)})
             continue
 
-        if state["llm_calls"] < settings.MAX_LLM_CALLS:
+        if state["llm_calls"] < budget:
             messages.append({"role": "assistant", "content": content or "（空）"})
             messages.append({"role": "user", "content": (
                 "请继续：若还没有可执行结果，调用 run_sql 验证你的 SQL；"
@@ -814,8 +821,9 @@ async def _workflow_loop(state: dict, sid: str):
     max_attempt = settings.MAX_SQL_RETRY + 1
     empty_retried = False
     expanded = False
+    budget = _agent_call_budget()
     for attempt in range(1, max_attempt + 1):
-        if state["llm_calls"] >= settings.MAX_LLM_CALLS:
+        if state["llm_calls"] >= budget:
             break
         state["attempt"] = attempt
         yield {"type": "stage", "key": "generate",
@@ -863,7 +871,7 @@ async def _workflow_loop(state: dict, sid: str):
             if (not expanded and ("no such table" in msg.lower()
                                   or "no such column" in msg.lower()
                                   or "has no column" in msg.lower())
-                    and state["llm_calls"] < settings.MAX_LLM_CALLS):
+                    and state["llm_calls"] < budget):
                 expanded = True
                 yield {"type": "retry", "attempt": attempt,
                        "error": "检测到缺表/缺列，正在补充关联表后重写 SQL"}
@@ -881,7 +889,7 @@ async def _workflow_loop(state: dict, sid: str):
                     + index.prompt_context(state["names"])
                 )})
                 continue
-            if attempt < max_attempt and state["llm_calls"] < settings.MAX_LLM_CALLS:
+            if attempt < max_attempt and state["llm_calls"] < budget:
                 yield {"type": "retry", "attempt": attempt, "error": msg[:200]}
                 messages.append({"role": "assistant", "content": sql})
                 messages.append({"role": "user", "content": (
@@ -900,7 +908,7 @@ async def _workflow_loop(state: dict, sid: str):
             state["zero_sql"] = res["sql"]
         if (zero_rows and settings.EMPTY_RESULT_RETRY and not empty_retried
                 and attempt < max_attempt
-                and state["llm_calls"] < settings.MAX_LLM_CALLS):
+                and state["llm_calls"] < budget):
             empty_retried = True
             yield {"type": "retry", "attempt": attempt,
                    "error": "查询返回 0 行，正在核对过滤条件并放宽重试"}
@@ -915,7 +923,7 @@ async def _workflow_loop(state: dict, sid: str):
 
         if (state.get("dim_hint")
                 and _dimension_stacked(res["sql"], state["dim_hint"])):
-            if attempt < max_attempt and state["llm_calls"] < settings.MAX_LLM_CALLS:
+            if attempt < max_attempt and state["llm_calls"] < budget:
                 yield {"type": "retry", "attempt": attempt,
                        "error": "SQL 仍按上一轮时间维度叠加分组，请只按新维度重写"}
                 messages.append({"role": "assistant", "content": sql})
