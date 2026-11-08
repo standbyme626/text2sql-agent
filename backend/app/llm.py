@@ -210,8 +210,21 @@ async def _completion(messages: list[dict], max_tokens: int | None = None,
                     r = await client.post(url, headers=headers, json=payload)
                 if r.status_code == 429:
                     sp.update(ok=False, status=429)
-                    last = "魔搭 429 限流，请稍后再试"
-                    await asyncio.sleep(2 * (attempt + 1))
+                    body = (r.text or "").lower()
+                    if any(k in body for k in ("insufficient balance", "quota",
+                                               "insufficient_quota", "billing")):
+                        raise LLMTransientError(
+                            "模型账户额度不足，请充值或切换免费模型（见 .env 的 LLM_API_KEY/LLM_MODEL）")
+                    last = "模型 429 限流，请稍后再试"
+                    # 尊重上游 Retry-After；没有就指数退避（3/6/9s）
+                    delay = 3 * (attempt + 1)
+                    try:
+                        ra = int(r.headers.get("retry-after") or 0)
+                        if ra > 0:
+                            delay = max(3, min(30, ra))
+                    except (TypeError, ValueError):
+                        pass
+                    await asyncio.sleep(delay)
                     continue
                 if r.status_code != 200:
                     body = (r.text or "").lower()

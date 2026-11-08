@@ -82,7 +82,9 @@ class Settings:
 
     # --- 文本大模型：魔搭 ModelScope ---
     LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "https://api-inference.modelscope.cn/v1").rstrip("/")
-    LLM_API_KEY: str = os.getenv("MODELSCOPE_API_KEY", "")
+    # 通用 key 优先；兼容旧配置的 MODELSCOPE_API_KEY
+    LLM_API_KEY: str = (os.getenv("LLM_API_KEY") or
+                        os.getenv("MODELSCOPE_API_KEY", ""))
     LLM_MODEL: str = os.getenv("LLM_MODEL", "deepseek-ai/DeepSeek-V4.1-Flash-1017")
     LLM_TIMEOUT: int = _clamped("LLM_TIMEOUT", 120, 10, 300)
     LLM_MAX_TOKENS: int = _clamped("LLM_MAX_TOKENS", 4096, 256, 8192)
@@ -117,7 +119,8 @@ class Settings:
     FK_EXPAND_MAX: int = _clamped("FK_EXPAND_MAX", 3, 0, 10)  # 外键闭包最多补几张表
     AUTO_INSIGHT: bool = _bool("AUTO_INSIGHT", True)
     FOLLOWUP_COUNT: int = _clamped("FOLLOWUP_COUNT", 3, 0, 6)
-    INSIGHT_MAX_TOKENS: int = _clamped("INSIGHT_MAX_TOKENS", 500, 100, 2000)
+    INSIGHT_MAX_TOKENS: int = _clamped("INSIGHT_MAX_TOKENS", 1200, 100, 3000)
+    INSIGHT_PREVIEW_ROWS: int = _clamped("INSIGHT_PREVIEW_ROWS", 20, 5, 50)
     EMPTY_RESULT_RETRY: bool = _bool("EMPTY_RESULT_RETRY", True)
     GUARD_ENABLED: bool = _bool("GUARD_ENABLED", True)
     GUARD_SUGGESTIONS: int = _clamped("GUARD_SUGGESTIONS", 3, 0, 6)

@@ -40,7 +40,9 @@ sys.path.insert(0, str(BACKEND))
 
 from fastapi.testclient import TestClient  # noqa: E402
 from app import auth, db, guard, llm  # noqa: E402
-from app.agent import is_chinese, parse_insight  # noqa: E402
+from app.agent import (_dimension_stacked, _dropped_constraints,
+                       _followup_dimension_hint, _is_empty_result,
+                       build_messages, is_chinese, parse_insight)  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.embedding import cosine  # noqa: E402
 from app.main import app  # noqa: E402
@@ -210,6 +212,9 @@ def main():
         check("长期记忆可列出", any("已完成" in m["text"] for m in mem))
         check("记忆按问题召回",
               any("已完成" in x for x in app.state.store.relevant_memory("统计已完成订单销售额", "admin")))
+        app.state.store.add_memory("admin", "默认只看广东")
+        check("无字面重合也注入最近偏好",
+              any("广东" in x for x in app.state.store.relevant_memory("统计销售额", "admin")))
         c.delete(f"/api/memory/{mm.json()['id']}", headers=H)
         check("记忆可删除", not any("已完成" in m["text"] for m in
                             c.get("/api/memory", headers=H).json()["memory"]))
@@ -312,6 +317,139 @@ def main():
             llm_mod.chat_tools, llm_mod.chat = old_tools, old_chat
             object.__setattr__(st_mod, "MOCK_MODE", old_mock)
             object.__setattr__(st_mod, "LLM_API_KEY", old_key)
+
+        # 工具报错 → Observation 回灌 → 修正成功
+        seq_err = [
+            {"content": "", "tool_calls": [{"id": "e1", "name": "run_sql",
+                                            "arguments": {"sql": "SELECT no_such_col FROM orders"}}]},
+            {"content": "", "tool_calls": [{"id": "e2", "name": "run_sql",
+                                            "arguments": {"sql": "SELECT COUNT(*) AS n FROM orders"}}]},
+            {"content": "DONE", "tool_calls": []},
+        ]
+
+        async def fake_tools_err(messages, tools, max_tokens=None):
+            return seq_err.pop(0)
+
+        llm_mod.chat_tools, llm_mod.chat = fake_tools_err, fake_chat
+        object.__setattr__(st_mod, "MOCK_MODE", False)
+        object.__setattr__(st_mod, "LLM_API_KEY", "selftest-fake")
+        try:
+            async def run_err():
+                out = []
+                async for ev in __import__("app.agent", fromlist=["agent"]).run_agent(
+                        "订单总数", "tool-err-sess", owner="admin"):
+                    out.append(ev)
+                return out
+            eev = asyncio.run(run_err())
+            check("工具报错后模型能修正成功",
+                  any(e["type"] == "retry" for e in eev)
+                  and any(e["type"] == "result" and e.get("row_count") == 1 for e in eev),
+                  str([e["type"] for e in eev]))
+        finally:
+            llm_mod.chat_tools, llm_mod.chat = old_tools, old_chat
+            object.__setattr__(st_mod, "MOCK_MODE", old_mock)
+            object.__setattr__(st_mod, "LLM_API_KEY", old_key)
+
+        # 0 行后删掉年份约束 → 保留 0 行结果（2027 场景）
+        seq_zero = [
+            {"content": "", "tool_calls": [{"id": "z1", "name": "run_sql",
+                                            "arguments": {"sql": "SELECT strftime('%Y-%m',order_date) AS m, SUM(pay_amount) AS g FROM orders WHERE order_date >= '2027-01-01' GROUP BY m"}}]},
+            {"content": "", "tool_calls": [{"id": "z2", "name": "run_sql",
+                                            "arguments": {"sql": "SELECT strftime('%Y-%m',order_date) AS m, SUM(pay_amount) AS g FROM orders GROUP BY m LIMIT 6"}}]},
+            {"content": "DONE", "tool_calls": []},
+        ]
+
+        async def fake_tools_zero(messages, tools, max_tokens=None):
+            return seq_zero.pop(0)
+
+        llm_mod.chat_tools, llm_mod.chat = fake_tools_zero, fake_chat
+        object.__setattr__(st_mod, "MOCK_MODE", False)
+        object.__setattr__(st_mod, "LLM_API_KEY", "selftest-fake")
+        try:
+            async def run_zero():
+                out = []
+                async for ev in __import__("app.agent", fromlist=["agent"]).run_agent(
+                        "2027 年 1 月的销售额是多少", "tool-zero-sess", owner="admin"):
+                    out.append(ev)
+                return out
+            zev = asyncio.run(run_zero())
+            zres = next((e for e in zev if e["type"] == "result"), {})
+            check("0 行重试丢年份被拦截",
+                  zres.get("row_count") == 0
+                  and any(e["type"] == "retry" and "时间约束" in (e.get("error") or "")
+                          for e in zev),
+                  str([e["type"] for e in zev]))
+        finally:
+            llm_mod.chat_tools, llm_mod.chat = old_tools, old_chat
+            object.__setattr__(st_mod, "MOCK_MODE", old_mock)
+            object.__setattr__(st_mod, "LLM_API_KEY", old_key)
+
+        # submit_result 指定最终 SQL：后续汇总查询不能覆盖
+        sql_a = "SELECT status, COUNT(*) AS n FROM orders GROUP BY status"
+        seq_sub = [
+            {"content": "", "tool_calls": [{"id": "s1", "name": "run_sql",
+                                            "arguments": {"sql": sql_a}}]},
+            {"content": "", "tool_calls": [{"id": "s2", "name": "run_sql",
+                                            "arguments": {"sql": "SELECT COUNT(*) AS n FROM orders"}}]},
+            {"content": "", "tool_calls": [{"id": "s3", "name": "submit_result",
+                                            "arguments": {"sql": sql_a, "reason": "状态分布"}}]},
+            {"content": "DONE", "tool_calls": []},
+        ]
+
+        async def fake_tools_sub(messages, tools, max_tokens=None):
+            return seq_sub.pop(0)
+
+        llm_mod.chat_tools, llm_mod.chat = fake_tools_sub, fake_chat
+        object.__setattr__(st_mod, "MOCK_MODE", False)
+        object.__setattr__(st_mod, "LLM_API_KEY", "selftest-fake")
+        try:
+            async def run_sub():
+                out = []
+                async for ev in __import__("app.agent", fromlist=["agent"]).run_agent(
+                        "订单状态分布", "tool-sub-sess", owner="admin"):
+                    out.append(ev)
+                return out
+            sev = asyncio.run(run_sub())
+            sres = next((e for e in sev if e["type"] == "result"), {})
+            check("submit_result 指定最终 SQL",
+                  sres.get("row_count") == 6
+                  and any(e.get("tool") == "submit_result" for e in sev if e["type"] == "step"),
+                  f"rows={sres.get('row_count')}")
+        finally:
+            llm_mod.chat_tools, llm_mod.chat = old_tools, old_chat
+            object.__setattr__(st_mod, "MOCK_MODE", old_mock)
+            object.__setattr__(st_mod, "LLM_API_KEY", old_key)
+
+        # 记忆写入后无需 SQL，也应给用户确认
+        seq_mem = [
+            {"content": "", "tool_calls": [{"id": "m1", "name": "remember_preference",
+                                            "arguments": {"text": "默认只看已完成订单"}}]},
+            {"content": "DONE", "tool_calls": []},
+        ]
+
+        async def fake_tools_mem(messages, tools, max_tokens=None):
+            return seq_mem.pop(0)
+
+        llm_mod.chat_tools, llm_mod.chat = fake_tools_mem, fake_chat
+        object.__setattr__(st_mod, "MOCK_MODE", False)
+        object.__setattr__(st_mod, "LLM_API_KEY", "selftest-fake")
+        try:
+            async def run_mem():
+                out = []
+                async for ev in __import__("app.agent", fromlist=["agent"]).run_agent(
+                        "请记住：以后默认只看已完成订单", "mem-note-sess", owner="admin"):
+                    out.append(ev)
+                return out
+            mev = asyncio.run(run_mem())
+            mh = app.state.store.get_history("mem-note-sess", 6, owner="admin")
+            check("记忆写入返回确认",
+                  any(e["type"] == "notice" and "已记住" in e.get("message", "")
+                      for e in mev)
+                  and any("已记住" in (h.get("content") or "") for h in mh))
+        finally:
+            llm_mod.chat_tools, llm_mod.chat = old_tools, old_chat
+            object.__setattr__(st_mod, "MOCK_MODE", old_mock)
+            object.__setattr__(st_mod, "LLM_API_KEY", old_key)
         print()
 
         # ---------- 7. 洞察 / 语言 / 开关 ----------
@@ -324,7 +462,56 @@ def main():
         check("洞察 JSON 解析", r["summary"] == "销售额增长 12%"
               and len(r["followups"]) == settings.FOLLOWUP_COUNT)
         check("洞察解析降级", bool(parse_insight("模型只回了一段自然语言结论")["summary"]))
+        import json as _json
+        nested = _json.dumps(_json.dumps(
+            {"summary": "销售额增长 12%", "followups": ["按月份看趋势"]},
+            ensure_ascii=False), ensure_ascii=False)
+        nn = parse_insight(nested)
+        check("洞察兼容双层 JSON 编码",
+              nn["summary"] == "销售额增长 12%" and len(nn["followups"]) >= 1)
+        trunc = '{"summary": "销售额增长 12%，共 24 个品类", "followups": ['
+        check("洞察兼容截断 JSON", parse_insight(trunc)["summary"].startswith("销售额增长"))
+        cut = '{"summary": "销售额增长 12%，共 24 个品类"'
+        check("洞察兼容缺失右引号", "销售额增长" in parse_insight(cut)["summary"])
         check("中文判定（数字多也算中文）", is_chinese("销售额 12345 元") and not is_chinese("Revenue grew 12%"))
+        mm_msgs = build_messages("统计销售额", "表 orders", [], [], "",
+                                 mode="toolloop", memory=["默认只看已完成订单"])
+        check("记忆以最高优先级进入 system",
+              "用户长期偏好（最高优先级" in mm_msgs[0]["content"]
+              and "默认只看已完成订单" in mm_msgs[0]["content"])
+        check("洞察提示含金额单位规则",
+              "除以 10000" in __import__("app.agent", fromlist=["agent"]).INSIGHT_SYSTEM)
+        check("单行全 NULL 视为空结果",
+              _is_empty_result({"row_count": 1, "rows": [[None]]})
+              and not _is_empty_result({"row_count": 1, "rows": [[0]]})
+              and _is_empty_result({"row_count": 0, "rows": []}))
+        check("中英混合结论仍算中文", is_chinese("2025 年 GMV 增长 12%，orders 表返回 24 行"))
+        check("英文元话语不算中文结论",
+              not is_chinese("We need answer JSON only. Need summary Chinese 2-3 sentences. 销售额"))
+        meta = parse_insight('{"summary":"We need answer JSON only. Need summary Chinese 2-3 sentences. 销售额","followups":[]}')
+        check("英文元话语触发改写", meta.get("non_chinese") is True)
+        zsql = "SELECT strftime('%Y-%m', order_date) AS m, SUM(pay_amount) FROM orders WHERE order_date >= '2027-01-01' GROUP BY m"
+        check("空结果重试不得删除年份",
+              _dropped_constraints("2027 年 1 月的销售额", zsql,
+                                   "SELECT strftime('%Y-%m', order_date) AS m, SUM(pay_amount) FROM orders GROUP BY m"))
+        check("空结果重试保留年份可接受",
+              not _dropped_constraints("2027 年 1 月的销售额", zsql, zsql))
+        pz = "SELECT SUM(pay_amount) FROM orders WHERE province='广东' AND order_date >= '2027-01-01'"
+        check("追问按品类=替换拆分维度",
+              "品类" in _followup_dimension_hint("那按品类拆一下", True)
+              and not _followup_dimension_hint("那按品类拆一下", False))
+        check("明确叠加维度时不替换",
+              not _followup_dimension_hint("同时按月份和品类拆一下", True))
+        check("维度叠加判定",
+              _dimension_stacked(
+                  "SELECT strftime('%Y-%m', order_date) m, c.name category, SUM(x) FROM t GROUP BY m, category",
+                  _followup_dimension_hint("那按品类拆一下", True))
+              and not _dimension_stacked(
+                  "SELECT c.name category, SUM(x) FROM t GROUP BY category",
+                  _followup_dimension_hint("那按品类拆一下", True)))
+        check("空结果重试不得删除省份约束",
+              _dropped_constraints("广东 2027 年 1 月的销售额", pz,
+                                   "SELECT SUM(pay_amount) FROM orders WHERE order_date >= '2027-01-01'"))
         eng = parse_insight('{"summary":"The result shows clear growth",'
                             '"followups":["Show me more","按月份看趋势"]}')
         check("英文洞察标记待改写", eng.get("non_chinese") is True and eng["summary"] == "")

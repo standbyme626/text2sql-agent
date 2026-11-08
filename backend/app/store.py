@@ -26,7 +26,11 @@ def _grams(s: str) -> set[str]:
 
 def _is_zh(s) -> bool:
     t = re.sub(r"\s+", "", str(s or ""))
-    return bool(t) and len(_ZH.findall(t)) / len(t) >= 0.15
+    if not t:
+        return False
+    zh = len(_ZH.findall(t))
+    en = len(re.findall(r"[A-Za-z]{2,}", t))
+    return zh >= 2 and en <= max(3, zh)
 
 
 def _to_blob(vec: list[float] | None) -> bytes | None:
@@ -421,7 +425,14 @@ class Store:
             if hit:
                 scored.append((hit, r["text"]))
         scored.sort(key=lambda x: -x[0])
-        return [t for _, t in scored[:k]]
+        out = [t for _, t in scored[:k]]
+        # 关键词没命中时也要注入最近偏好（例如「默认只看广东」与问题无字面重合）
+        for r in rows:
+            if len(out) >= k:
+                break
+            if r["text"] not in out:
+                out.append(r["text"])
+        return out[:k]
 
     # ---------- 历史问答 few-shot ----------
     def add_qa(self, question: str, sql: str, vector: list[float] | None,

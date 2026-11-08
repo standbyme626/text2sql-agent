@@ -27,7 +27,7 @@
 > 曾在公网域名上以「应用层登录 + 只读闸门」对外提供过一段时间，单账号使用；
 > 仓库不含数据库文件、向量索引与任何密钥，首次运行按第 8 节初始化，约 1 分钟建好 50 张表。
 
-**50 张表** · **51,899 行** · **tool-calling Agent** · **4 个工具 + MCP** · **109 项自测** · **单轮 ≤ 5 次 LLM 调用**
+**50 张表** · **51,899 行** · **tool-calling Agent** · **5 个工具 + MCP** · **129 项自测** · **单轮 ≤ 5 次 LLM 调用**
 
 ---
 
@@ -95,7 +95,7 @@ Text-to-SQL 的 demo 半天能写完，但它离「能给别人用」差一段�
 
 | 能力 | 代码入口 |
 |---|---|
-| **Tool-calling Agent** — 模型自主调 search_schema / run_sql / list_metrics；报错与 0 行作为 Observation 回灌 | `agent.py::_tool_loop`、`tools.py` |
+| **Tool-calling Agent** — 模型自主调 search_schema / run_sql / submit_result / list_metrics；报错与 0 行作为 Observation 回灌 | `agent.py::_tool_loop`、`tools.py` |
 | **MCP Server** — stdio 暴露同一套只读工具，可接 Claude Code / opencode / 任意 MCP host | `backend/mcp_server.py` |
 | **向量选表 + 列级 linking** — 问题向量化 → Top-6 表 + 外键闭包；列级中文关键词打分 | `schema_index.py::search`、`column_scores` |
 | **YAML 语义层** — GMV/销量/客单价等指标与标准 JOIN 可版本化、可 API 审计 | `semantic/metrics.yaml`、`semantic.py` |
@@ -242,6 +242,7 @@ Text-to-SQL 的 demo 半天能写完，但它离「能给别人用」差一段�
 - **工具调用**：默认发送 OpenAI `tools` + `tool_choice=auto`；上游返回 400/不支持时自动回退 workflow，不影响可用性；
 - **可替换**：两个端点都是 OpenAI 兼容协议，改 `.env` 的 `LLM_BASE_URL` / `LLM_MODEL` 即可换成别家；
 - **降级顺序**：toolloop → workflow；向量选表 → 关键词选表；自动结论失败 → 前端提示可手动「AI 解读」；无 Key → `MOCK_MODE`。
+- **免费兜底**：ModelScope 额度耗尽时，可把 `LLM_BASE_URL` 指向 OpenRouter，使用带 `:free` 后缀的模型（如 `nvidia/nemotron-3-ultra-550b-a55b:free`），并设置通用 `LLM_API_KEY`；**本项目任何情况下不调用收费模型**。
 
 ---
 
@@ -327,6 +328,7 @@ metrics:
 | `SQL_TIMEOUT_MS` | 5000 | 单条 SQL 超时 |
 | `EMPTY_RESULT_RETRY` | `true` | 0 行是否回灌重试 |
 | `HISTORY_TURNS` | 6 | 注入几轮历史对话 |
+| `INSIGHT_PREVIEW_ROWS` | 20 | 洞察调用最多喂多少行结果（防止把前 8 行当全量） |
 | `AGENT_MODE` | `toolloop` | `toolloop` / `workflow` |
 | `MAX_AGENT_STEPS` | 6 | Agent 最多规划步数（钳制 1~20） |
 | `MAX_TOOL_SQL` | 4 | 单轮最多执行几次 SQL |
@@ -413,7 +415,7 @@ cp .env.example .env
 |---|---|
 | 服务 | `HOST`、`PORT`、`PUBLIC_BASE_PATH`、`CORS_ORIGINS` |
 | 鉴权 | `AUTH_USER`、`AUTH_PASSWORD`、`TOKEN_TTL_HOURS`、`SECRET_KEY` |
-| 文本模型 | `LLM_BASE_URL`、`MODELSCOPE_API_KEY`、`LLM_MODEL`、`LLM_TIMEOUT`、`LLM_MAX_TOKENS` |
+| 文本模型 | `LLM_BASE_URL`、`LLM_API_KEY`（优先）/ `MODELSCOPE_API_KEY`、`LLM_MODEL`、`LLM_TIMEOUT`、`LLM_MAX_TOKENS` |
 | 向量模型 | `EMB_BASE_URL`、`SILICONFLOW_API_KEY`、`EMB_MODEL`、`EMB_DIM` |
 | Agent | `AGENT_MODE`、`MAX_AGENT_STEPS`、`MAX_TOOL_SQL`、`TOP_K_TABLES`、`FK_EXPAND_MAX`、`MAX_SQL_RETRY`、`MAX_LLM_CALLS`、`AUTO_INSIGHT`、`EMPTY_RESULT_RETRY` |
 | 语义 / 数据源 | `SEMANTIC_FILE`、`DATABASE_URL`（Postgres）、`COLUMN_LINK_TOPK`、`TOOL_ROW_PREVIEW` |
@@ -633,7 +635,7 @@ DOMAIN=sql.example.com sudo -E bash /tmp/text2sql-deploy/setup-edge.sh
 MOCK_MODE=true .venv/bin/python backend/scripts/selftest.py
 ```
 
-**109 项断言**，跑在独立临时数据目录上，不碰开发库、不消耗外部额度，结束自动清理。
+**129 项断言**，跑在独立临时数据目录上，不碰开发库、不消耗外部额度，结束自动清理。
 覆盖新增的 tool-calling 循环（假模型注入）、语义层、列级 linking、trace、记忆、MCP 握手、eval 冒烟。
 
 | 组 | 覆盖内容 |
@@ -745,7 +747,7 @@ text2sql-agent/
 │   │   ├── build_index.py     # 构建向量索引
 │   │   ├── build_meta_pg.py   # Postgres 内省 → schema_meta.json
 │   │   ├── eval.py            # golden / BIRD 执行准确率评测
-│   │   └── selftest.py        # 109 项全链路自测
+│   │   └── selftest.py        # 129 项全链路自测
 │   ├── semantic/metrics.yaml  # 受治理指标层（唯一真相）
 │   ├── mcp_server.py          # MCP stdio server（只读工具）
 │   └── data/                  # 运行期生成（.gitignore）

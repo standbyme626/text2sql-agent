@@ -9,6 +9,10 @@ business_rules:
   - 销量：order_items.quantity 求和；客单价 = 有效订单实付金额 / 订单数。
   - 金额单位为元，聚合结果用 ROUND(..., 2)；状态值只能用给定「可选值」，不要臆造。
   - 日期字段是 TEXT(YYYY-MM-DD)；按月份统计必须使用当前方言的日期函数。
+  - 用户说「总订单数 / 总客户数 / 全部订单」时，不要擅自排除 cancelled / refunded；只有说「有效 / 成交 / 销售额」时才按有效口径过滤。
+  - 例外：退款率/退货率的分母默认是非 cancelled 订单（已取消订单不进入可退款基数）；用户明确说「占全部订单（含取消）」时才用全量。
+  - 复购客户 = 至少 2 笔有效订单（排除 cancelled / refunded）的客户；若用户明确说「全部订单」，则按全部订单统计。
+  - 0 行结果不得通过删除用户明确给出的年份 / 月份 / 省份等约束来凑数；应如实说明未查到。
 
 metrics:
   - id: gmv
@@ -57,9 +61,9 @@ metrics:
     name: 退款率
     synonyms: [退款率, 退货率, 售后率]
     table: refunds
-    expr: "ROUND(COUNT(DISTINCT refunds.refund_id) * 1.0 / COUNT(DISTINCT orders.order_id), 4)"
+    expr: "ROUND(COUNT(DISTINCT refunds.order_id) * 1.0 / COUNT(DISTINCT orders.order_id), 4)"
     unit: 比例
-    notes: refunds JOIN orders ON refunds.order_id = orders.order_id。
+    notes: refunds JOIN orders ON refunds.order_id = orders.order_id；按类目/品牌拆分时，分子分母都要先按订单去重再聚合到同一维度，不要用全局订单数做分母。
 
   - id: avg_rating
     name: 平均评分

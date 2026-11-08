@@ -132,7 +132,7 @@ SSE 生成器在客户端断开时会收到 `GeneratorExit`（属于 `BaseExcept
 
 ## 3. 自测矩阵
 
-`backend/scripts/selftest.py` 共 109 项断言，跑在**独立临时数据目录**上，
+`backend/scripts/selftest.py` 共 129 项断言，跑在**独立临时数据目录**上，
 不碰开发库、不消耗真实 API 额度（`MOCK_MODE`），结束自动清理。
 
 | 组 | 覆盖内容 |
@@ -201,3 +201,20 @@ JSONL（trace_id / span 名称 / 起止偏移 / 属性 / token），需要接 La
 之外，再执行 `SET TRANSACTION READ ONLY`，并复用同一套 `clean_sql`；
 schema 元数据由 `build_meta_pg.py` 从 `information_schema` + `pg_class` 内省生成，
 不假设表名/列名与 SQLite 演示库一致。
+
+---
+
+## 6. v3.0.1 真实模型线上实测修复（2026-11-08）
+
+用真实模型 + 线上数据做难度测试后，又修了一轮 Agent 行为 bug：
+
+| 现象 | 根因 | 修复 |
+|---|---|---|
+| 用户问「各品类销售额」，最后却返回「品类数+总额」 | 模型为了汇总又跑了一条 `COUNT(*)`，旧逻辑用最后一条 SQL 做最终结果 | 新增 `submit_result(sql)` 工具：只有显式提交的 SQL 会展示；后续校验查询不覆盖 |
+| 问「2027 年 1 月」0 行后，模型删掉年份过滤返回最近 6 个月 | 0 行放宽重试没有任何约束保护 | `_dropped_constraints`：年份/月份/「最近 N 天」/问题中出现的字符串约束被删就保留 0 行结果 |
+| 洞察结论偶发 `{"summary": ...}` 原文或英文元话语 | 模型输出双层 JSON / max_tokens 截断 / 语言判定只看汉字数 | 双层与截断 JSON 容错；`is_chinese` 增加英文词数约束；洞察预览行数 8→20，token 500→1200 |
+| 追问「那按品类拆一下」返回「月份×品类」183 行 | 模型把新维度叠加到上一轮时间维度上 | 追问维度替换提示 + `_dimension_stacked` 校验；提交叠加 SQL 会被打回重写 |
+| 说「记住：默认只看已完成」后下一条查询没生效 | 记忆只在 user 消息里，优先级低于 system 中的业务口径；召回只按关键词 | 记忆注入 system 并标最高优先级；关键词无命中时仍注入最近偏好 |
+| 说「记住...」后没有 SQL，Agent 报「无法产出结果」 | memory 写入不是查询结果，旧循环只认 SQL | 记忆写入后返回 notice 确认并落库 |
+| ModelScope 余额不足显示成「限流，请稍后」 | 429 未区分余额不足与 RPM 限流 | 解析 429 正文，余额不足直接提示充值/切换模型；429 尊重 Retry-After |
+| 扩表 `search_schema(query)` 用原始问题向量 | 工具复用了首轮 embedding | 查询词变化时重新 embedding |

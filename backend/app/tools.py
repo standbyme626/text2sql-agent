@@ -57,6 +57,25 @@ TOOL_SPECS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "submit_result",
+            "description": (
+                "提交最终答案对应的 SQL。只有 submit_result 提交的 SQL 结果会展示给用户。"
+                "必须提交一条已经 run_sql 验证过、且与用户问题粒度一致的 SQL；"
+                "不要提交汇总/校验/明细替换查询。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sql": {"type": "string"},
+                    "reason": {"type": "string", "maxLength": 200},
+                },
+                "required": ["sql"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "remember_preference",
             "description": (
                 "仅当用户明确说「记住/以后/默认」时，写入一条长期偏好（如默认只看有效订单）。"
@@ -85,6 +104,7 @@ class ToolContext:
         self.qvec = qvec
         self.sql_count = 0
         self.executed: list[dict] = []
+        self.submitted_sql = ""
 
 
 def tool_names() -> list[str]:
@@ -93,12 +113,14 @@ def tool_names() -> list[str]:
 
 def _preview(res: dict, limit: int | None = None) -> dict:
     n = limit or settings.TOOL_ROW_PREVIEW
+    total = res.get("row_count", 0)
     return {
         "ok": True,
         "sql": res.get("sql", ""),
         "columns": res.get("columns", []),
         "rows": res.get("rows", [])[:n],
-        "row_count": res.get("row_count", 0),
+        "row_count": total,
+        "preview_note": f"仅展示前 {min(n, total)} 行，共 {total} 行；不要假设未展示行不存在",
         "truncated": bool(res.get("truncated")),
         "elapsed_ms": res.get("elapsed_ms", 0),
     }
@@ -119,8 +141,11 @@ async def _dispatch(ctx: ToolContext, name: str, args: dict) -> dict:
     if name == "search_schema":
         query = str(args.get("query") or ctx.question or "").strip()
         top_k = max(1, min(12, int(args.get("top_k") or settings.TOP_K_TABLES)))
+        # 查询词变了就重新 embedding；沿用原问题的向量会选错扩表结果
+        same_q = query.strip() == (ctx.question or "").strip()
         tables = await ctx.idx.search(
-            query, top_k=top_k, boost=ctx.boost, qvec=ctx.qvec, expand_fks=True)
+            query, top_k=top_k, boost=ctx.boost,
+            qvec=ctx.qvec if same_q else None, expand_fks=True)
         names = [t["name"] for t in tables]
         colmap = {t["name"]: t.get("matched_columns") or [] for t in tables}
         return {
@@ -162,6 +187,13 @@ async def _dispatch(ctx: ToolContext, name: str, args: dict) -> dict:
             ],
             "joins": cat["joins"],
         }
+
+    if name == "submit_result":
+        sql = str(args.get("sql") or "").strip()
+        if not sql:
+            return {"ok": False, "error": "sql 参数为空"}
+        ctx.submitted_sql = sql
+        return {"ok": True, "submitted": sql}
 
     if name == "remember_preference":
         if not settings.MEMORY_ENABLED or ctx.store is None or not ctx.owner:

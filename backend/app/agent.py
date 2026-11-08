@@ -41,6 +41,8 @@ BASE_SYSTEM_PROMPT = """你是一名资深电商数据分析师，把中文业�
 5. 默认给结果加合理的 LIMIT（10~50 行），除非问题明确要求全量。
 6. 严禁 INSERT/UPDATE/DELETE/DROP/PRAGMA/ATTACH 等任何写操作或多语句。
 7. 用户追问（如「那按月份呢」「只看广东」）时，结合【上一轮 SQL】和【最近对话】做指代消解，输出完整可独立执行的 SQL。
+   追问「按 X 拆一下 / 换成 X / 只看 X」= 用 X 替换上一轮的拆分维度，不要把新旧维度叠加；
+   只有明确说「同时 / 再按 / 再加上」才叠加维度。
 8. 【拒答协议】遇到以下情况**不要生成 SQL**，只输出一行纯文本标记（不要围栏、不要解释）：
     【拒答】|一句话中文原因|可替代问题1|可替代问题2|可替代问题3
     - 与电商数据无关（闲聊、创作、翻译、常识、写代码、实时天气 / 股价 / 竞品 / 未来预测）；
@@ -56,14 +58,21 @@ TOOL_SYSTEM_PROMPT = """你是一名 2026 电商数据 Agent。你不是一次�
 - search_schema(query, top_k)：检索表/字段。初始上下文只含 Top-K 表；缺表、缺列或需要扩大范围时调用。
 - run_sql(sql)：在只读连接上执行 SELECT/WITH，返回列、行、错误。**任何结论都必须先执行验证**。
 - list_metrics()：查看受治理的指标口径（GMV/销量/客单价等）与标准 JOIN。
+- submit_result(sql)：提交最终答案对应的 SQL；只有它提交的结果会展示给用户。
 - remember_preference(text)：仅当用户明确说「记住 / 以后 / 默认」时写入长期偏好。
 
 工作方式（必须遵守）：
 1. 先判断现有表上下文是否足够；不够就 search_schema，不要凭空猜表名或字段。
 2. 生成 SQL 后必须先 run_sql 执行；报错或 0 行时读取工具返回的 Observation 自行修正，再执行。
-3. 拿到可信结果后，只输出一行 DONE 结束（不要复述表格，系统会另行生成结论）。
-4. 无法回答时输出【拒答】协议（与下方规则一致）。
-5. 不要编造查询结果；没有 run_sql 成功结果就不要声称任何数字。
+3. 拿到能回答问题的结果后，必须调用 `submit_result(sql=该结果对应的 SQL)` 提交最终答案，
+   然后再输出 DONE。只有 submit_result 提交的 SQL 结果会展示给用户。
+4. **submit_result 必须提交与用户问题粒度一致、且已经 run_sql 验证过的那条 SQL**：
+   用户要「商品/品类/排名/趋势/明细」时就提交该粒度；不要提交 `COUNT(*)`、总额、原始流水
+   等改变粒度的汇总/校验查询。新的 run_sql 不会自动替换最终答案。
+5. 用户追问「按 X 拆一下 / 换成 X / 只看 X」= 用 X 替换上一轮的拆分维度，
+   不要把新旧维度叠加；只有明确说「同时 / 再按 / 再加上」才叠加。
+6. 无法回答时输出【拒答】协议（与下方规则一致）。
+7. 不要编造查询结果；没有 run_sql 成功结果就不要声称任何数字。
 
 硬性约束：
 - 只读，只允许 SELECT/WITH；禁止写操作、多语句、PRAGMA/ATTACH/COPY 等。
@@ -77,11 +86,13 @@ TOOL_SYSTEM_PROMPT = """你是一名 2026 电商数据 Agent。你不是一次�
 INSIGHT_SYSTEM = """你是电商数据分析师，基于「用户问题 + SQL + 查询结果」给出结论和后续可追问的问题。
 
 【硬性语言要求】summary 与 followups 必须全部使用简体中文，一句英文都不能有。
+【数字与单位】查询结果的金额单位默认为元；换算成万元必须除以 10000（例如 5564.88 元 = 0.56 万元），
+不要放大 10 倍。百分比列若已乘 100，就不要再乘一次；比率列（0~1）换算百分比才乘 100。
 即使用户问题、SQL、列名或字段值是英文，也必须用简体中文叙述；
 GMV / SKU 等专有名词、数字、表名可保留，但句子本身必须是中文。
 
 只输出一个 JSON 对象，不要解释、不要 markdown 围栏：
-{"summary": "2-3 句中文结论，点出关键数字、占比或趋势，说明业务含义；不复述 SQL，不编造结果之外的事实",
+{"summary": "2-3 句中文结论（不超过 120 字），点出关键数字、占比或趋势，说明业务含义；不复述 SQL，不编造结果之外的事实",
  "followups": ["追问1", "追问2", "追问3"]}
 
 对 followups 的要求（它们会变成用户可点击的按钮）：
@@ -111,8 +122,15 @@ _ZH = re.compile(r"[\u4e00-\u9fff]")
 
 
 def is_chinese(text: str, min_zh: int = 2) -> bool:
-    """按汉字绝对数判定：含大量数字/英文缩写的中文结论也应算中文。"""
-    return len(_ZH.findall(str(text or ""))) >= min_zh
+    """中文结论判定：汉字数量达标，且英文单词不能压过中文。
+
+    旧实现只看「汉字 >= 2」，会把 "We need answer JSON only ... 2026" 这类
+    模型元话语当成中文结论放过去。现在要求英文单词数不超过汉字数。
+    """
+    t = str(text or "")
+    zh = len(_ZH.findall(t))
+    en = len(re.findall(r"[A-Za-z]{2,}", t))
+    return zh >= min_zh and en <= max(3, zh)
 
 
 def setup(idx: SchemaIndex, st: Store) -> None:
@@ -146,12 +164,63 @@ def _history_block(history: list[dict]) -> str:
     return "\n".join(lines)
 
 
+_DIM_HINT = re.compile(r"按\s*([\u4e00-\u9fa5A-Za-z0-9_]{1,8})\s*(?:拆|分|看|统计|汇总|列)")
+_DIM_STACK = re.compile(r"(同时|再按|再加|以及|分别按|和|与)")
+
+
+def _followup_dimension_hint(question: str, is_followup: bool) -> str:
+    """追问「按 X 拆一下」默认是替换拆分维度，不是叠加。"""
+    if not is_followup:
+        return ""
+    q = question or ""
+    m = _DIM_HINT.search(q)
+    if not m or _DIM_STACK.search(q) or q.count("按") > 1:
+        return ""
+    dim = m.group(1).strip()
+    if dim in ("什么", "哪个", "怎么", "多少"):
+        return ""
+    return (f"【追问意图】用户要把拆分维度替换为「{dim}」，"
+            "不要保留上一轮的拆分维度；只有明确说同时/再按才叠加。")
+
+
+_DIM_COL = {
+    "品类": "categor", "类目": "categor", "分类": "categor",
+    "品牌": "brand", "省份": "province", "省": "province",
+    "城市": "city", "支付方式": "payment_method", "仓库": "warehouse",
+    "商品": "product", "客户": "customer", "渠道": "channel",
+}
+
+
+def _dimension_stacked(sql: str, hint: str) -> bool:
+    """追问要求替换维度，但 SQL 仍按上一轮时间维度 + 新维度双重分组。"""
+    if not sql or not hint:
+        return False
+    m = re.search(r"「(.+?)」", hint)
+    dim = m.group(1) if m else ""
+    token = _DIM_COL.get(dim)
+    low = sql.lower()
+    if not token or token not in low:
+        return False
+    gm = re.search(r"group\s+by\s+(.+?)(?:order\s+by|limit|$)", low, re.S)
+    if not gm or "," not in gm.group(1):
+        return False
+    return bool(re.search(
+        r"(strftime|date_trunc|year_month|month\b|extract\s*\(|date\()", low))
+
+
 def build_messages(question: str, ctx: str, history: list[dict],
                    fewshot: list[dict], last_sql: str,
                    mode: str = "workflow", memory: list[str] | None = None) -> list[dict]:
     """标准 role 交替 messages；tool 模式与 workflow 模式共用历史/上下文构造。"""
     system = (TOOL_SYSTEM_PROMPT if mode == "toolloop" else BASE_SYSTEM_PROMPT)
     system += "\n" + semantic.prompt_block(question)
+    if memory:
+        system += ("\n【用户长期偏好（最高优先级，覆盖默认业务口径）】\n"
+                   + "\n".join(f"- {m}" for m in memory))
+    if last_sql:
+        dim_hint = _followup_dimension_hint(question, True)
+        if dim_hint:
+            system += "\n" + dim_hint
     msgs: list[dict] = [{"role": "system", "content": system}]
     hist = history[:-1] if history and history[-1].get("role") == "user" else history
     for h in hist:
@@ -168,20 +237,27 @@ def build_messages(question: str, ctx: str, history: list[dict],
 
     parts = [f"【本轮问题】\n{question}"]
     if memory:
-        parts.append("【用户长期偏好（来自显式记忆，优先遵守）】\n"
+        parts.append("【用户长期偏好（最高优先级，覆盖默认口径）】\n"
                      + "\n".join(f"- {m}" for m in memory))
+    dim_hint = ""
     if last_sql:
         parts.append(f"【上一轮 SQL（追问时参考）】\n```sql\n{last_sql}\n```")
+        dim_hint = _followup_dimension_hint(question, True)
+        if dim_hint:
+            parts.append(dim_hint)
     if len(hist) > 1:
         parts.append(f"【最近对话】\n{_history_block(hist)}")
     if fewshot:
         ex = "\n\n".join(f'问：{f["question"]}\nSQL：{f["sql"]}' for f in fewshot)
         parts.append(f"【相似历史问答（可参考 SQL 写法，只准使用下方给出的表）】\n{ex}")
     parts.append(f"【可用数据表（只准使用以下表与字段）】\n{ctx}")
+    if dim_hint:
+        parts.append("【必须遵守】" + dim_hint + " 如果 SQL 里同时保留上一轮时间维度和新维度，本次回答判错。")
     if mode == "toolloop":
         parts.append(
             f"请开始执行。最多 {settings.MAX_AGENT_STEPS} 步、{settings.MAX_TOOL_SQL} 次 SQL；"
-            "先用 search_schema 补表（如需），再用 run_sql 验证；拿到可信结果后只回复 DONE。"
+            "先用 search_schema 补表（如需），再用 run_sql 验证；拿到可信结果后调用 "
+            "submit_result(sql=该 SQL) 提交，再回复 DONE。"
         )
     else:
         parts.append("现在只输出一条 SQL，用 ```sql 围栏包裹。")
@@ -201,12 +277,43 @@ def _clean_json_text(raw: str) -> str:
     return text
 
 
+def _extract_json_field(raw: str, field: str) -> str:
+    """从被截断/夹杂解释的 JSON 文本里抠出单个字符串字段。"""
+    # 先按完整字符串匹配；失败再容忍 max_tokens 截断导致的缺失右引号
+    m = re.search(rf'"{re.escape(field)}"\s*:\s*"((?:\\.|[^"\\])*)"',
+                  raw or "", re.S)
+    if not m:
+        m = re.search(rf'"{re.escape(field)}"\s*:\s*"((?:\\.|[^"\\])*)',
+                      raw or "", re.S)
+    if not m:
+        return ""
+    body = m.group(1).rstrip()
+    try:
+        return json.loads('"' + body + '"')
+    except (ValueError, TypeError):
+        return body.replace('\\n', '\n').replace('\\"', '"')
+
+
 def parse_insight(raw: str) -> dict:
     """宽松解析模型输出；失败时降级为纯文本结论 + 通用追问，绝不阻断主流程。"""
     text = _clean_json_text(raw)
     summary, followups = "", []
+    data = None
     try:
-        data = json.loads(text)
+        for candidate in ((raw or "").strip(), text):
+            try:
+                data = json.loads(candidate)
+                break
+            except (ValueError, TypeError):
+                continue
+        # 兼容模型把 JSON 再包一层字符串（double-encoded）
+        for _ in range(3):
+            if not isinstance(data, str):
+                break
+            try:
+                data = json.loads(data)
+            except (ValueError, TypeError):
+                break
         if isinstance(data, dict):
             summary = str(data.get("summary") or "").strip()
             raw_fu = data.get("followups") or []
@@ -215,7 +322,20 @@ def parse_insight(raw: str) -> dict:
                              if str(x).strip() and len(str(x).strip()) < 80]
     except (ValueError, TypeError):
         pass
+    # summary 本身也可能是嵌套 JSON 字符串
+    if isinstance(summary, str) and summary.lstrip().startswith("{"):
+        try:
+            inner = json.loads(_clean_json_text(summary))
+            if isinstance(inner, dict) and inner.get("summary"):
+                summary = str(inner["summary"]).strip()
+                if not followups and isinstance(inner.get("followups"), list):
+                    followups = [str(x).strip() for x in inner["followups"]
+                                 if str(x).strip() and len(str(x).strip()) < 80]
+        except (ValueError, TypeError):
+            pass
 
+    if not summary:
+        summary = _extract_json_field(raw, "summary").strip()
     if not summary:
         summary = (raw or "").strip().strip("`").strip()[:400]
 
@@ -236,9 +356,10 @@ def parse_insight(raw: str) -> dict:
 
 async def build_insight(question: str, sql: str, columns: list[str], rows: list[list],
                         truncated: bool = False, zero_rows: bool = False) -> dict:
-    """一次轻量调用同时产出结论与追问建议（只喂前 8 行，控制 token）。"""
+    """一次轻量调用同时产出结论与追问建议（默认只喂前 20 行，控制 token）。"""
+    n_preview = min(len(rows), settings.INSIGHT_PREVIEW_ROWS)
     preview = json.dumps(
-        [dict(zip(columns, r)) for r in rows[:8]], ensure_ascii=False, default=str
+        [dict(zip(columns, r)) for r in rows[:n_preview]], ensure_ascii=False, default=str
     )
     system = INSIGHT_SYSTEM
     if zero_rows:
@@ -250,7 +371,8 @@ async def build_insight(question: str, sql: str, columns: list[str], rows: list[
         {"role": "user", "content": (
             f"用户问题：{question}\nSQL：{sql}\n"
             f"返回行数：{len(rows)}{'（已截断，非全量）' if truncated else ''}\n"
-            f"结果前 8 行（JSON）：{preview}\n"
+            f"结果预览（共 {len(rows)} 行，仅展示前 {n_preview} 行；"
+            f"不要假设未展示的行不存在）：{preview}\n"
             f"请输出 JSON，followups 严格 {settings.FOLLOWUP_COUNT} 条。"
         )},
     ]
@@ -295,6 +417,53 @@ async def explain_result(question: str, sql: str,
 
 def _fail(reason: str) -> dict:
     return {"type": "error", "message": reason}
+
+
+def _is_empty_result(res: dict) -> bool:
+    """0 行，或单行聚合结果全为 NULL（无数据时的 SUM/COUNT 形态）。"""
+    if res.get("row_count") == 0:
+        return True
+    rows = res.get("rows") or []
+    return (res.get("row_count") == 1 and len(rows) == 1
+            and all(v is None for v in rows[0]))
+
+
+_YEAR = re.compile(r"\b(20\d{2})\b")
+_MONTH = re.compile(r"(\d{1,2})\s*月")
+_RECENT = re.compile(r"最近\s*(\d+)\s*(天|日|周|个月|月|年)")
+
+
+def _dropped_constraints(question: str, zero_sql: str, new_sql: str) -> bool:
+    """0 行后的放宽重试是否删掉了用户明确给出的时间约束。
+
+    典型坏例子：用户问「2027 年 1 月」，0 行后模型把 WHERE 整段删掉，
+    返回最近 6 个月的数据当作答案。这里做最小保护：问题里的年份/月份
+    「最近 N 天/月」在重试 SQL 中消失，就判定为过度放宽，保留原 0 行结果。
+    """
+    q = question or ""
+    new = (new_sql or "").lower()
+    years = set(_YEAR.findall(q))
+    for y in years:
+        if y not in new:
+            return True
+    for m in _MONTH.findall(q):
+        if not years:
+            break
+        y = sorted(years)[0]
+        if f"{y}-{int(m):02d}" not in new and f"-{int(m):02d}" not in new:
+            return True
+    for n, _unit in _RECENT.findall(q):
+        if n not in new and not re.search(
+                r"(date|strftime|julianday|date_trunc|interval|order_date\s*[<>]=?)", new):
+            return True
+    for y in _YEAR.findall(zero_sql or ""):
+        if y in years and y not in new:
+            return True
+    # 用户问题里明确出现的字符串约束（省份/类目/状态）不能被重试删掉
+    for lit in re.findall(r"'([^']{2,30})'", zero_sql or ""):
+        if lit in q and lit not in new_sql:
+            return True
+    return False
 
 
 def _step(state: dict, name: str, args: dict, result: dict, ms: float) -> dict:
@@ -343,7 +512,7 @@ async def _finalize(state: dict, sid: str, question: str, res: dict):
             insight = await build_insight(
                 question, res["sql"], res["columns"], res["rows"],
                 truncated=bool(res.get("truncated")),
-                zero_rows=res["row_count"] == 0,
+                zero_rows=_is_empty_result(res),
             )
             state["llm_calls"] += 1
             if not insight.get("summary"):
@@ -358,7 +527,11 @@ async def _finalize(state: dict, sid: str, question: str, res: dict):
             store.patch_message(mid, payload_patch={"insight": None})
             yield {"type": "insight_warning",
                    "message": "结论生成失败（不影响查询结果），可点「重新解读」重试"}
-    elif not settings.AUTO_INSIGHT:
+    elif settings.AUTO_INSIGHT:
+        yield {"type": "insight_warning",
+               "message": "本轮模型调用预算已用尽，结果已返回；可点「AI 解读」生成结论。"}
+        store.patch_message(mid, payload_patch={"auto_insight": False})
+    else:
         yield {"type": "insight_disabled",
                "message": "自动结论已关闭，可点「AI 解读」手动生成。"}
         store.patch_message(mid, payload_patch={"auto_insight": False})
@@ -411,10 +584,11 @@ async def _tool_loop(state: dict, sid: str):
         except llm.LLMToolUnsupported:
             state["tool_unsupported"] = True
             return
-        except llm.LLMTransientError:
+        except llm.LLMTransientError as e:
             logger.warning("LLM 瞬时故障，终止本轮", exc_info=True)
             state["outcome"] = {"kind": "error",
-                                "message": "模型服务暂时不可用或触发限流，请稍后重试原问题。"}
+                                "message": str(e).strip()
+                                or "模型服务暂时不可用或触发限流，请稍后重试原问题。"}
             return
         state["llm_calls"] += 1
         calls = resp.get("tool_calls") or llm.parse_tool_json(resp.get("content") or "")
@@ -439,6 +613,19 @@ async def _tool_loop(state: dict, sid: str):
             for c in calls:
                 name, args = c["name"], c.get("arguments") or {}
                 if name == "run_sql":
+                    cand_sql = str(args.get("sql") or "").strip()
+                    if (state.get("zero_result") and cand_sql
+                            and _dropped_constraints(
+                                state["question"], state["zero_sql"], cand_sql)):
+                        blocked = {"ok": False,
+                                   "error": "重试删除了问题中的时间约束，已保留 0 行结果"}
+                        yield _step(state, name, args, blocked, 0.0)
+                        yield {"type": "retry", "attempt": state.get("attempt", 1),
+                               "error": blocked["error"]}
+                        state["last_result"] = state["zero_result"]
+                        state["last_sql"] = state["zero_sql"]
+                        state["outcome"] = {"kind": "result"}
+                        return
                     yield {"type": "stage", "key": "execute",
                            "label": "正在执行 SQL"}
                 t0 = asyncio.get_event_loop().time()
@@ -446,6 +633,52 @@ async def _tool_loop(state: dict, sid: str):
                 ms = (asyncio.get_event_loop().time() - t0) * 1000
                 yield _step(state, name, args, result, ms)
 
+                if name == "submit_result" and result.get("ok"):
+                    submitted = ctx.submitted_sql
+                    if (state.get("dim_hint")
+                            and _dimension_stacked(submitted, state["dim_hint"])):
+                        bad = {"ok": False,
+                               "error": "追问要求替换拆分维度，提交的 SQL 仍叠加了上一轮"
+                                        "时间分组；请只按新维度 GROUP BY 后重新 submit_result。"}
+                        yield _step(state, name, args, bad, 0.0)
+                        obs = tools.observation(bad)
+                        messages.append({"role": "tool",
+                                         "tool_call_id": c.get("id") or "call",
+                                         "content": obs} if native else
+                                        {"role": "user",
+                                         "content": f"【工具 {name} 结果】\n{obs}"})
+                        continue
+                    norm = lambda x: re.sub(r"\s+", " ", (x or "")).strip().lower()
+                    matched = next(
+                        (r for r in reversed(ctx.executed)
+                         if norm(r.get("sql")) == norm(submitted)
+                         or norm(r.get("sql_executed")) == norm(submitted)
+                         or norm(submitted) == norm(r.get("sql"))),
+                        None)
+                    if matched is None:
+                        try:
+                            matched = db.execute_readonly(submitted)
+                            ctx.executed.append(matched)
+                            yield {"type": "sql", "sql": matched["sql"],
+                                   "attempt": state.get("attempt", 1)}
+                        except (db.SqlRejected, db.SqlTimeout, RuntimeError) as e:
+                            result = {"ok": False, "error": str(e)[:200],
+                                      "hint": "submit_result 的 SQL 未验证通过，请先 run_sql 修正。"}
+                            yield _step(state, name, args, result, 0.0)
+                            obs = tools.observation(result)
+                            messages.append({"role": "tool",
+                                             "tool_call_id": c.get("id") or "call",
+                                             "content": obs} if native else
+                                            {"role": "user",
+                                             "content": f"【工具 {name} 结果】\n{obs}"})
+                            continue
+                    state["last_result"] = matched
+                    state["last_sql"] = matched["sql"]
+                    state["submitted"] = True
+                    state["outcome"] = {"kind": "result"}
+                    return
+                if name == "remember_preference" and result.get("ok"):
+                    state["memory_note"] = str(result.get("text") or "")
                 if name == "search_schema":
                     if result.get("ok"):
                         state["tables"] = result.get("tables") or state["tables"]
@@ -461,13 +694,48 @@ async def _tool_loop(state: dict, sid: str):
                                "attempt": state.get("attempt", 1)}
                     if result.get("ok"):
                         if ctx.executed:
-                            state["last_result"] = ctx.executed[-1]
-                            state["attempt"] = state.get("attempt", 1)
+                            new_res = ctx.executed[-1]
+                            if (state.get("zero_result")
+                                    and _dropped_constraints(
+                                        state["question"], state["zero_sql"],
+                                        new_res["sql"])):
+                                yield {"type": "retry",
+                                       "attempt": state.get("attempt", 1),
+                                       "error": "重试删除了问题中的时间约束，已保留 0 行结果"}
+                                state["last_result"] = state["zero_result"]
+                                state["last_sql"] = state["zero_sql"]
+                                state["outcome"] = {"kind": "result"}
+                                return
+                            if (state.get("dim_hint")
+                                    and _dimension_stacked(
+                                        new_res["sql"], state["dim_hint"])):
+                                yield {"type": "retry",
+                                       "attempt": state.get("attempt", 1),
+                                       "error": "SQL 仍按上一轮时间维度叠加分组，"
+                                                "请只按用户要求的新维度分组后重新提交"}
+                                state["last_sql"] = (
+                                    state["last_result"]["sql"]
+                                    if state.get("last_result") else "")
+                            else:
+                                state["last_result"] = new_res
+                                state["attempt"] = state.get("attempt", 1)
+                                if _is_empty_result(new_res):
+                                    state["zero_result"] = new_res
+                                    state["zero_sql"] = new_res["sql"]
                     elif result.get("error"):
                         yield {"type": "retry",
                                "attempt": state.get("attempt", 1),
                                "error": result["error"][:200]}
                 obs = tools.observation(result)
+                if (name == "run_sql" and result.get("ok")
+                        and state.get("last_result")):
+                    lr = state["last_result"]
+                    obs += (
+                        f"\n\n【当前最终结果】{lr['row_count']} 行，列："
+                        f"{', '.join(lr.get('columns') or [])}。"
+                        "若该结果已能完整回答用户问题，请立即只输出 DONE；"
+                        "不要再执行改变问题粒度的汇总/校验查询。"
+                    )
                 if native:
                     messages.append({"role": "tool",
                                      "tool_call_id": c.get("id") or "call",
@@ -482,8 +750,12 @@ async def _tool_loop(state: dict, sid: str):
         if refusal:
             state["outcome"] = {"kind": "refusal", "hit": refusal}
             return
+        if not state.get("last_result") and state.get("memory_note"):
+            state["outcome"] = {"kind": "note",
+                                "text": f"已记住：{state['memory_note']}"}
+            return
         if state.get("last_result"):
-            if (state["last_result"]["row_count"] == 0
+            if (_is_empty_result(state["last_result"])
                     and settings.EMPTY_RESULT_RETRY and not zero_retried
                     and state["llm_calls"] < settings.MAX_LLM_CALLS):
                 zero_retried = True
@@ -491,9 +763,9 @@ async def _tool_loop(state: dict, sid: str):
                        "error": "查询返回 0 行，正在核对过滤条件并放宽重试"}
                 messages.append({"role": "assistant", "content": content or "DONE"})
                 messages.append({"role": "user", "content": (
-                    "【观察】上一次 run_sql 语法正确但返回 0 行。可能是 WHERE 枚举值写错、"
-                    "日期范围过窄或 JOIN 过滤掉了数据。请核对给定「可选值」并放宽条件，"
-                    "用 run_sql 重试；若确认该维度无数据，则输出一条说明数据范围的统计查询。"
+                    "【观察】上一次 run_sql 语法正确但返回 0 行。先核对枚举值与日期格式；"
+                    "**不得删除用户明确给出的年份/月份/日期/省份等约束来凑数据**。"
+                    "若修正后仍无数据，保留 0 行结果并直接输出 DONE，系统会据实说明未查到。"
                 )})
                 continue
             state["outcome"] = {"kind": "result"}
@@ -528,6 +800,9 @@ async def _tool_loop(state: dict, sid: str):
 
     if state.get("last_result"):
         state["outcome"] = {"kind": "result"}
+    elif state.get("memory_note"):
+        state["outcome"] = {"kind": "note",
+                            "text": f"已记住：{state['memory_note']}"}
     else:
         state["outcome"] = {"kind": "error",
                             "message": "Agent 未能产出可验证的查询结果，请换一种问法。"}
@@ -548,10 +823,11 @@ async def _workflow_loop(state: dict, sid: str):
         try:
             raw = await llm.chat(messages)
             state["llm_calls"] += 1
-        except llm.LLMTransientError:
+        except llm.LLMTransientError as e:
             logger.warning("LLM 瞬时故障，跳过改 SQL 重试", exc_info=True)
             state["outcome"] = {"kind": "error",
-                                "message": "模型服务暂时不可用或触发限流，请稍后重试原问题。"}
+                                "message": str(e).strip()
+                                or "模型服务暂时不可用或触发限流，请稍后重试原问题。"}
             return
 
         refusal = guard.parse_refusal(raw)
@@ -567,6 +843,15 @@ async def _workflow_loop(state: dict, sid: str):
         yield {"type": "sql", "sql": sql, "attempt": attempt}
 
         yield {"type": "stage", "key": "execute", "label": "正在执行查询"}
+        if (state.get("zero_result")
+                and _dropped_constraints(state["question"],
+                                         state["zero_sql"], sql)):
+            yield {"type": "retry", "attempt": attempt,
+                   "error": "重试删除了问题中的时间约束，已保留 0 行结果"}
+            state["last_result"] = state["zero_result"]
+            state["last_sql"] = state["zero_sql"]
+            state["outcome"] = {"kind": "result"}
+            return
         try:
             res = db.execute_readonly(sql)
         except db.SqlTimeout:
@@ -609,7 +894,10 @@ async def _workflow_loop(state: dict, sid: str):
                                 "message": "SQL 执行失败且重试次数已用完，请换一种问法或缩小查询范围。"}
             return
 
-        zero_rows = res["row_count"] == 0
+        zero_rows = _is_empty_result(res)
+        if zero_rows:
+            state["zero_result"] = res
+            state["zero_sql"] = res["sql"]
         if (zero_rows and settings.EMPTY_RESULT_RETRY and not empty_retried
                 and attempt < max_attempt
                 and state["llm_calls"] < settings.MAX_LLM_CALLS):
@@ -625,6 +913,26 @@ async def _workflow_loop(state: dict, sid: str):
             )})
             continue
 
+        if (state.get("dim_hint")
+                and _dimension_stacked(res["sql"], state["dim_hint"])):
+            if attempt < max_attempt and state["llm_calls"] < settings.MAX_LLM_CALLS:
+                yield {"type": "retry", "attempt": attempt,
+                       "error": "SQL 仍按上一轮时间维度叠加分组，请只按新维度重写"}
+                messages.append({"role": "assistant", "content": sql})
+                messages.append({"role": "user", "content": (
+                    "【观察】用户是在替换拆分维度，不是叠加。请去掉上一轮的时间分组，"
+                    "只按用户要求的新维度 GROUP BY，重新输出一条 SQL。"
+                )})
+                continue
+        if (state.get("zero_result") and not zero_rows
+                and _dropped_constraints(state["question"],
+                                         state["zero_sql"], res["sql"])):
+            yield {"type": "retry", "attempt": attempt,
+                   "error": "重试删除了问题中的时间约束，已保留 0 行结果"}
+            state["last_result"] = state["zero_result"]
+            state["last_sql"] = state["zero_sql"]
+            state["outcome"] = {"kind": "result"}
+            return
         state["last_result"] = res
         state["last_sql"] = res["sql"]
         state["outcome"] = {"kind": "result"}
@@ -647,6 +955,7 @@ async def run_agent(question: str, session_id: str | None = None,
         "qvec": None, "boost": [], "tables": [], "names": [],
         "messages": [], "llm_calls": 0, "steps": [], "trace": trace,
         "last_result": None, "last_sql": "", "outcome": None,
+        "memory_note": "",
         "completed": False, "status": "ok", "mode": settings.AGENT_MODE,
         "attempt": 1,
     }
@@ -685,6 +994,7 @@ async def run_agent(question: str, session_id: str | None = None,
         mode = settings.AGENT_MODE if settings.AGENT_MODE in ("toolloop", "workflow") \
             else "toolloop"
         state["mode"] = mode
+        state["dim_hint"] = _followup_dimension_hint(question, bool(last_sql))
         state["messages"] = build_messages(
             question, ctx_text, history, fewshot, last_sql,
             mode=mode, memory=memory)
@@ -722,6 +1032,17 @@ async def run_agent(question: str, session_id: str | None = None,
                                            state["names"], state.get("attempt", 1)):
                 yield ev
             return
+        if kind == "note":
+            text = outcome.get("text") or "已记住。"
+            store.add_message(sid, "assistant", text, "", [],
+                              payload={"note": True, "trace_id": trace.id,
+                                       "agent_mode": state["mode"]})
+            state["completed"] = True
+            yield {"type": "notice", "message": text}
+            yield {"type": "done", "session_id": sid, "tables": [],
+                   "attempt": state.get("attempt", 1),
+                   "trace_id": trace.id, "agent_mode": state["mode"]}
+            return
         if kind == "error":
             state["status"] = "error"
             yield _fail(outcome.get("message") or "本次查询未完成，请稍后重试。")
@@ -753,6 +1074,7 @@ async def run_agent(question: str, session_id: str | None = None,
             agent_mode=state.get("mode"), steps=len(state["steps"]),
             sql_count=len([s for s in state["steps"] if s["tool"] == "run_sql"]),
             completed=state.get("completed", False),
+            submitted=bool(state.get("submitted")),
         )
         # 客户端断连时补偿，保证 user/assistant 成对
         if not state.get("completed"):
