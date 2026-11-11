@@ -175,7 +175,32 @@ Text-to-SQL 的 demo 半天能写完，但它离「能给别人用」差一段�
   <img src="docs/screenshots/login.png" width="640" alt="应用层登录页">
 </p>
 
-<p align="center"><sub>登录后 24 小时内免输；token 绑定密码版本，改密即失效</sub></p>
+<p align="center"><sub>账号 + 密码登录，24 小时内免输；token 绑定账号表版本，改密/增删账号即失效</sub></p>
+
+**管理员登录后会出现「管理」入口**（普通用户看不到，管理端 API 直接返回 403）：
+
+<p align="center">
+  <img src="docs/screenshots/admin-overview.png" width="900" alt="管理后台概览：模型主备链路、运行状态与最近 Trace">
+</p>
+
+<p align="center"><sub>概览：会话/知识样例/规则计数、成功率与 P50/P95、主备模型链路、最近 Trace</sub></p>
+
+<table align="center">
+  <tr>
+    <td align="center"><img src="docs/screenshots/admin-semantic.png" width="430" alt="语义指标：业务规则、受治理指标与标准 JOIN"></td>
+    <td align="center"><img src="docs/screenshots/admin-knowledge.png" width="430" alt="知识库：收录 NL→SQL 样例与业务规则"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>语义指标：口径规则 + 8 个受治理指标 + 标准 JOIN</sub></td>
+    <td align="center"><sub>知识库：收录样例/规则，写入 knowledge/*.md，可提交可回滚</sub></td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/screenshots/admin-sessions.png" width="900" alt="会话轨迹：全部用户会话与回答收录">
+</p>
+
+<p align="center"><sub>会话轨迹：管理员可查看所有 owner 的会话，并把验证过的回答一键收录进知识库</sub></p>
 
 ---
 

@@ -172,7 +172,7 @@
     <div class="login-mask" v-if="needLogin">
       <div class="login-card">
         <h2>登录</h2>
-        <p>请输入访问密码，登录后 24 小时内免输</p>
+        <p>请输入账号与密码，登录后 24 小时内免输</p>
         <input v-model="loginUser" placeholder="用户名" @keyup.enter="doLogin" />
         <input v-model="loginPass" type="password" placeholder="密码" @keyup.enter="doLogin" />
         <button @click="doLogin">登录</button>
