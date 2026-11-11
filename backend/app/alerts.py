@@ -202,17 +202,17 @@ def slo(ctx: dict) -> dict:
     traces = int(metrics.get("traces") or 0)
     target_p95 = 60000.0
     p95 = float((metrics.get("latency_ms") or {}).get("p95") or 0.0)
-    success = float(metrics.get("success_rate") or 0.0)
+    success = float(metrics.get("success_rate") or 0.0) if traces else None
     budget = 0.001  # 允许 0.1% 失败
     used = max(0.0, 1.0 - success)
     return {
-        "availability": round(success * 100, 2),
+        "availability": round(success * 100, 2) if success is not None else None,
         "availability_target": 99.9,
         "latency_p95_ms": p95,
         "latency_target_ms": target_p95,
         "latency_ok": p95 <= target_p95,
         "error_budget_pct": round(budget * 100, 3),
-        "error_budget_used_pct": round(used * 100, 3),
+        "error_budget_used_pct": round(used * 100, 3) if success is not None else 0.0,
         "error_budget_remaining_pct": round(max(0.0, budget - used) * 100, 3),
         "traces": traces,
     }

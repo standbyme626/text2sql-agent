@@ -71,7 +71,8 @@
             </div>
             <div class="adm-divider"></div>
             <dl class="adm-kv">
-              <dt>可用性</dt><dd>{{ slo?.availability }}%（目标 {{ slo?.availability_target }}%）</dd>
+              <dt>可用性</dt>
+              <dd>{{ slo?.availability == null ? '暂无样本' : slo.availability + '%' }}（目标 {{ slo?.availability_target }}%）</dd>
               <dt>P95</dt><dd>{{ ms(slo?.latency_p95_ms) }}（目标 {{ ms(slo?.latency_target_ms) }}）</dd>
               <dt>错误预算</dt>
               <dd>已用 {{ slo?.error_budget_used_pct }}%，剩余 {{ slo?.error_budget_remaining_pct }}%</dd>
@@ -147,7 +148,8 @@
             <div class="adm-h2">服务等级目标</div>
             <dl class="adm-kv">
               <dt>可用性</dt>
-              <dd>{{ alertsData?.slo?.availability }}% / 目标 {{ alertsData?.slo?.availability_target }}%</dd>
+              <dd>{{ alertsData?.slo?.availability == null ? '暂无样本' : alertsData.slo.availability + '%' }}
+                / 目标 {{ alertsData?.slo?.availability_target }}%</dd>
               <dt>P95 延迟</dt>
               <dd>{{ ms(alertsData?.slo?.latency_p95_ms) }} / 目标 {{ ms(alertsData?.slo?.latency_target_ms) }}</dd>
               <dt>错误预算</dt>
