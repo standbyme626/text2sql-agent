@@ -29,6 +29,7 @@ for name in ("ecommerce.db", "schema_meta.json"):
 
 os.environ.update({
     "MOCK_MODE": "true",
+    "TEXT2SQL_NO_DOTENV": "1",     # 不读线上 .env，账号/密钥与生产隔离
     "TEXT2SQL_DATA_DIR": str(TMP_DATA),
     "AUTH_USER": "admin",
     "AUTH_PASSWORD": "selftest-password",

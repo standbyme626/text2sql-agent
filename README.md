@@ -24,7 +24,8 @@
 </div>
 
 > **项目状态：v3.1 / 2026 Agent 架构 / 单实例演示。**
-> 支持管理员 + 普通用户两种角色；管理员可在「管理后台」维护知识库、语义指标、会话轨迹与运行状态。
+> 支持管理员 + 普通用户两种角色；管理员可在「管理后台」维护知识库、语义指标、会话轨迹与运行状态，
+> 也可用 `?view=admin` 深链直达管理端。
 > 仓库不含数据库文件、向量索引与任何密钥，首次运行按第 8 节初始化，约 1 分钟建好 50 张表。
 
 **50 张表** · **51,899 行** · **tool-calling Agent** · **5 个工具 + MCP** · **150 项自测** · **单轮 ≤ 6 次 LLM 调用** · **主备模型链路**
@@ -114,7 +115,7 @@ Text-to-SQL 的 demo 半天能写完，但它离「能给别人用」差一段�
 | **主备模型链路** — 默认 opencode-go DeepSeek V4.1 Flash；429/超时/空返回自动切 OpenRouter 免费模型，trace 标记实际 provider | `llm.py::_completion`、`providers_info` |
 | **文件知识库（Wren AI 风格）** — `knowledge/sql/*.md` 正式样例 + `knowledge/rules/*.md` 业务规则；markdown 是唯一真相，检索只是派生层 | `knowledge.py`、`knowledge/` |
 | **多账号 RBAC** — `AUTH_USERS` 配置 admin/user；普通用户只能问答，管理端 API 403 | `auth.py::require_admin`、`config.py` |
-| **管理后台** — 概览 / 知识库 / 语义指标 / 全部会话 / Trace / 账号与运维，风格与问答端一致 | `AdminPanel.vue`、`/api/admin/*` |
+| **管理后台** — 六个屏：运行总览 / 模型网关 / 知识库 / 语义指标 / 会话回放 / 权限与账号；分组侧栏 + KPI + 健康条 + 告警，视觉沿用双端原型 | `AdminPanel.vue`、`/api/admin/*` |
 | **拒答引导** — 规则前置拦截无关/越权/注入；模糊问题给可点击的正确问法 | `guard.py::check`、`parse_refusal` |
 | **会话还原** — 完整回答结构化落库（`payload`），切走再切回表格/图表/结论都在 | `store.py::add_answer`、`get_history` |
 | **鉴权** — 中文登录页 + HMAC token，签名绑定密码版本；登录失败按 IP 限流 | `auth.py::make_token`、`rate_ok` |
@@ -177,30 +178,43 @@ Text-to-SQL 的 demo 半天能写完，但它离「能给别人用」差一段�
 
 <p align="center"><sub>账号 + 密码登录，24 小时内免输；token 绑定账号表版本，改密/增删账号即失效</sub></p>
 
-**管理员登录后会出现「管理」入口**（普通用户看不到，管理端 API 直接返回 403）：
+**管理员登录后会出现「管理」入口**（普通用户看不到，管理端 API 直接返回 403）。
+管理端的视觉与交互沿用 `smart_hospital_agent` 的双端原型：顶栏端切换、分组侧栏、KPI 卡片、
+健康进度条、告警块与配置快照。
 
 <p align="center">
-  <img src="docs/screenshots/admin-overview.png" width="900" alt="管理后台概览：模型主备链路、运行状态与最近 Trace">
+  <img src="docs/screenshots/admin-overview.png" width="900" alt="管理后台运行总览：组件健康、告警、Trace 与配置快照">
 </p>
 
-<p align="center"><sub>概览：会话/知识样例/规则计数、成功率与 P50/P95、主备模型链路、最近 Trace</sub></p>
+<p align="center"><sub>运行总览：会话/成功率/P50/P95、组件健康条、待办告警、最近 Trace、账号角色</sub></p>
 
 <table align="center">
   <tr>
-    <td align="center"><img src="docs/screenshots/admin-semantic.png" width="430" alt="语义指标：业务规则、受治理指标与标准 JOIN"></td>
-    <td align="center"><img src="docs/screenshots/admin-knowledge.png" width="430" alt="知识库：收录 NL→SQL 样例与业务规则"></td>
+    <td align="center"><img src="docs/screenshots/admin-model.png" width="430" alt="模型网关：主备模型链路与 Agent 参数"></td>
+    <td align="center"><img src="docs/screenshots/admin-access.png" width="430" alt="权限与账号：角色列表与权限矩阵"></td>
   </tr>
   <tr>
-    <td align="center"><sub>语义指标：口径规则 + 8 个受治理指标 + 标准 JOIN</sub></td>
-    <td align="center"><sub>知识库：收录样例/规则，写入 knowledge/*.md，可提交可回滚</sub></td>
+    <td align="center"><sub>模型网关：主备链路、Agent 参数、索引状态</sub></td>
+    <td align="center"><sub>权限与账号：admin/user 能力矩阵、登录安全策略</sub></td>
+  </tr>
+</table>
+
+<table align="center">
+  <tr>
+    <td align="center"><img src="docs/screenshots/admin-knowledge.png" width="430" alt="知识库：收录 NL→SQL 样例与业务规则"></td>
+    <td align="center"><img src="docs/screenshots/admin-sessions.png" width="430" alt="会话回放：全部 owner 会话与回答收录"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>知识库：样例与规则写入 knowledge/*.md，可提交可回滚</sub></td>
+    <td align="center"><sub>会话回放：跨 owner 查看回答，一键收录进知识库</sub></td>
   </tr>
 </table>
 
 <p align="center">
-  <img src="docs/screenshots/admin-sessions.png" width="900" alt="会话轨迹：全部用户会话与回答收录">
+  <img src="docs/screenshots/admin-semantic.png" width="900" alt="语义指标：业务口径规则、受治理指标与标准 JOIN">
 </p>
 
-<p align="center"><sub>会话轨迹：管理员可查看所有 owner 的会话，并把验证过的回答一键收录进知识库</sub></p>
+<p align="center"><sub>语义指标：口径规则 + 8 个受治理指标 + 标准 JOIN</sub></p>
 
 ---
 

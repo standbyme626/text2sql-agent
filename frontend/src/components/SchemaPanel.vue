@@ -2,7 +2,7 @@
   <div class="schema-panel">
     <div class="schema-head">
       <button class="drawer-close" aria-label="关闭表结构" @click="$emit('close')">×</button>
-      <h3>表结构浏览 · {{ tables.length }} 张表</h3>
+      <h3>表结构浏览（{{ tables.length }} 张表）</h3>
       <input class="schema-search" v-model="q" placeholder="搜索表名 / 中文名 / 业务域" />
     </div>
     <div class="schema-list">
@@ -11,7 +11,7 @@
                 @click="toggle(t.name)" @keydown.enter.space.prevent="toggle(t.name)">
           <span class="tname">{{ t.name }}</span>
           <span class="tcn">{{ t.cn }}</span>
-          <span class="domain">{{ t.domain }} · {{ t.rows }} 行</span>
+          <span class="domain">{{ t.domain }}，{{ t.rows }} 行</span>
         </button>
         <div class="schema-detail" v-if="open === t.name">
           <div class="kv" v-if="detail.keywords"><b>检索关键词：</b>{{ detail.keywords }}</div>

@@ -15,7 +15,11 @@ PROJECT_DIR = BACKEND_DIR.parent                   # text2sql-agent
 DATA_DIR = Path(os.getenv("TEXT2SQL_DATA_DIR", str(BACKEND_DIR / "data")))
 STATIC_DIR = Path(os.getenv("TEXT2SQL_STATIC_DIR", str(BACKEND_DIR / "static")))
 
-load_dotenv(PROJECT_DIR / ".env", override=False)
+# 自测/隔离实例用 TEXT2SQL_NO_DOTENV=1 切断线上 .env，避免密钥与账号串味
+if os.getenv("TEXT2SQL_NO_DOTENV", "").strip().lower() in ("1", "true", "yes", "on"):
+    pass
+else:
+    load_dotenv(PROJECT_DIR / ".env", override=False)
 
 
 def _bool(key: str, default: bool = False) -> bool:

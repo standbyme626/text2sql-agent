@@ -1,7 +1,7 @@
 <template>
   <div>
     <div class="result-head">
-      <span class="stat">返回 <b>{{ result.row_count ?? 0 }}</b> 行 · {{ result.elapsed_ms ?? 0 }} ms</span>
+      <span class="stat">返回 <b>{{ result.row_count ?? 0 }}</b> 行，耗时 {{ result.elapsed_ms ?? 0 }} ms</span>
       <span class="stat" v-if="result.truncated">（已按上限截断，非全量）</span>
       <div class="spacer"></div>
       <button v-if="chart && chartPoints.length" @click="showChart = !showChart">
@@ -31,16 +31,16 @@
           <g v-for="(p, i) in points" :key="'b' + i">
             <rect :x="p.x" :y="Math.min(zeroY, p.y)" :width="barW"
                   :height="Math.max(1, Math.abs(zeroY - p.y))"
-                  :fill="p.value < 0 ? '#ef4444' : '#3b82f6'" rx="2" />
+                  :fill="p.value < 0 ? '#ef4444' : '#0e9384'" rx="2" />
             <text v-if="i % labelStep === 0" :x="p.x + barW / 2" :y="H - 12"
                   text-anchor="middle" font-size="9" fill="#64748b">{{ p.label }}</text>
           </g>
         </template>
         <template v-else>
           <polyline :points="points.map(p => `${p.x + barW / 2},${p.y}`).join(' ')"
-                    fill="none" stroke="#2563eb" stroke-width="2.2" />
+                    fill="none" stroke="#0e9384" stroke-width="2.2" />
           <g v-for="(p, i) in points" :key="'l' + i">
-            <circle :cx="p.x + barW / 2" :cy="p.y" r="2.6" fill="#2563eb" />
+            <circle :cx="p.x + barW / 2" :cy="p.y" r="2.6" fill="#0e9384" />
             <text v-if="i % labelStep === 0" :x="p.x + barW / 2" :y="H - 12"
                   text-anchor="middle" font-size="9" fill="#64748b">{{ p.label }}</text>
           </g>

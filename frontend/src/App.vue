@@ -6,7 +6,7 @@
       </button>
       <div class="brand">
         <div class="logo">S</div>
-        <div>Text-to-SQL Agent<small>电商数据自然语言问答 · {{ meta?.total || 50 }} 张表</small></div>
+        <div>Text-to-SQL Agent<small>电商数据自然语言问答（{{ meta?.total || 50 }} 张表）</small></div>
       </div>
       <div class="view-tabs">
         <button class="tbtn" :class="{ active: view === 'chat' }" @click="switchView('chat')">问答</button>
@@ -156,7 +156,7 @@
             <button v-else class="send" @click="ask(input)" :disabled="!input.trim()">发送</button>
           </div>
           <div class="hint">
-            SQL 只读执行、禁止写操作 · 报错自动纠错 · 单次最多 {{ cfg?.max_rows || 500 }} 行
+            SQL 只读执行、禁止写操作；报错自动纠错；单次最多 {{ cfg?.max_rows || 500 }} 行
           </div>
         </div>
       </section>
@@ -297,6 +297,11 @@ async function bootstrap() {
   try {
     cfg.value = await api.config()
     role.value = cfg.value.role || getRole()
+    // 深链：?view=admin 直接打开管理后台（仅 admin 角色有效）
+    if (role.value === 'admin'
+        && new URLSearchParams(location.search).get('view') === 'admin') {
+      view.value = 'admin'
+    }
     meta.value = await api.meta()
     health.value = await api.health()
     status.value = await api.status()
@@ -427,7 +432,7 @@ async function removeSession(id) {
 
 function formatArgs(args) {
   const parts = Object.entries(args).map(([k, v]) => `${k}=${String(v).slice(0, 60)}`)
-  return parts.join(' · ')
+  return parts.join('，')
 }
 function userQuestionOf(i) {
   for (let j = i - 1; j >= 0; j--) if (messages.value[j].role === 'user') return messages.value[j].content
