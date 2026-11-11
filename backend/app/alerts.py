@@ -204,7 +204,7 @@ def slo(ctx: dict) -> dict:
     p95 = float((metrics.get("latency_ms") or {}).get("p95") or 0.0)
     success = float(metrics.get("success_rate") or 0.0) if traces else None
     budget = 0.001  # 允许 0.1% 失败
-    used = max(0.0, 1.0 - success)
+    used = max(0.0, 1.0 - success) if success is not None else 0.0
     return {
         "availability": round(success * 100, 2) if success is not None else None,
         "availability_target": 99.9,
