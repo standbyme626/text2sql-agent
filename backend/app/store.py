@@ -283,6 +283,40 @@ class Store:
         finally:
             c.close()
 
+    def message_with_question(self, mid: int,
+                              owner: str | None = None) -> dict | None:
+        """取一条消息 + 它前面最近一条用户问题，供「确认回答进知识库」使用。"""
+        c = self._conn()
+        try:
+            row = c.execute(
+                "SELECT id,session_id,role,content,sql,tables,payload,created_at "
+                "FROM messages WHERE id=?", (mid,)).fetchone()
+            if not row:
+                return None
+            if not self._visible(owner, self._owner_of(c, row["session_id"])):
+                return None
+            q = c.execute(
+                "SELECT content FROM messages WHERE session_id=? AND role='user' "
+                "AND id<? ORDER BY id DESC LIMIT 1",
+                (row["session_id"], mid)).fetchone()
+            d = dict(row)
+            d["question"] = (q["content"] if q else "") or ""
+            d["owner"] = self._owner_of(c, row["session_id"]) or ""
+            try:
+                d["tables"] = json.loads(d.get("tables") or "[]")
+            except (ValueError, TypeError):
+                d["tables"] = []
+            return d
+        finally:
+            c.close()
+
+    def count_sessions(self) -> int:
+        c = self._conn()
+        try:
+            return int(c.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+        finally:
+            c.close()
+
     def message_id_for(self, sid: str, nth_assistant: int) -> int:
         """按「本会话第 N 条 assistant」定位消息 id，供前端重跑回写。"""
         c = self._conn()

@@ -1,6 +1,7 @@
 // 后端 API 封装：应用 token（独立头）+ SSE 流式解析 + 可取消流
 const TOKEN_KEY = 't2s_token'
 const LAST_USER_KEY = 't2s_last_user'
+const ROLE_KEY = 't2s_role'
 
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY) || ''
@@ -14,6 +15,11 @@ export function setLastUser(u) {
   if (u) localStorage.setItem(LAST_USER_KEY, u)
   else localStorage.removeItem(LAST_USER_KEY)
 }
+export function getRole() { return localStorage.getItem(ROLE_KEY) || '' }
+export function setRole(r) {
+  if (r) localStorage.setItem(ROLE_KEY, r)
+  else localStorage.removeItem(ROLE_KEY)
+}
 
 function authHeaders() {
   const h = { 'Content-Type': 'application/json' }
@@ -25,6 +31,7 @@ function authHeaders() {
 
 function unauthorized() {
   setToken('')
+  setRole('')
   window.dispatchEvent(new CustomEvent('t2s-unauthorized'))
 }
 
@@ -50,9 +57,18 @@ export const api = {
   status: () => request('/api/status'),
   login: (username, password) => request('/api/login', {
     method: 'POST', body: JSON.stringify({ username, password }),
-  }).then(d => { setToken(d.token || ''); setLastUser(username); return d }),
+  }).then(d => {
+    setToken(d.token || '')
+    setLastUser(username)
+    setRole(d.role || '')
+    return d
+  }),
   logout: () => request('/api/logout', { method: 'POST' }).catch(() => ({})),
-  config: () => request('/api/config'),
+  config: () => request('/api/config').then(d => {
+    if (d.role) setRole(d.role)
+    if (d.user) setLastUser(d.user)
+    return d
+  }),
   meta: () => request('/api/meta'),
   table: (name) => request(`/api/tables/${encodeURIComponent(name)}`),
   sessions: () => request('/api/sessions'),
@@ -63,6 +79,25 @@ export const api = {
   }),
   explain: (payload) => request('/api/explain', { method: 'POST', body: JSON.stringify(payload) }),
   rebuildIndex: () => request('/api/index/rebuild', { method: 'POST' }),
+  adminOverview: () => request('/api/admin/overview'),
+  adminKnowledge: () => request('/api/admin/knowledge'),
+  adminAddSql: (payload) => request('/api/admin/knowledge/sql', {
+    method: 'POST', body: JSON.stringify(payload),
+  }),
+  adminFromMessage: (payload) => request('/api/admin/knowledge/from-message', {
+    method: 'POST', body: JSON.stringify(payload),
+  }),
+  adminDeleteSql: (id) => request(`/api/admin/knowledge/sql/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  adminAddRule: (payload) => request('/api/admin/knowledge/rules', {
+    method: 'POST', body: JSON.stringify(payload),
+  }),
+  adminDeleteRule: (id) => request(`/api/admin/knowledge/rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  adminSessions: () => request('/api/admin/sessions'),
+  adminHistory: (sid) => request(`/api/admin/history?session_id=${encodeURIComponent(sid)}`),
+  adminDeleteSession: (sid) => request(`/api/admin/sessions/${encodeURIComponent(sid)}`, { method: 'DELETE' }),
+  adminTraces: () => request('/api/admin/traces'),
+  adminUsers: () => request('/api/admin/users'),
+  semantic: () => request('/api/semantic'),
 }
 
 /** SSE 流式提问；onEvent 逐条收到后端事件对象。

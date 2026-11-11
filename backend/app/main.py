@@ -14,11 +14,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import agent, auth, db, semantic, tools, tracing
-from .auth import make_token, require_auth, verify_login
+from . import agent, auth, db, knowledge, llm, semantic, tools, tracing
+from .auth import make_token, require_admin, require_auth, verify_login
 from .config import STATIC_DIR, settings
 from .embedding import last_error
-from .models import ExplainReq, LoginReq, MemoryReq, QueryReq, SqlReq
+from .models import (ExplainReq, FromMessageReq, KnowledgeRuleReq,
+                     KnowledgeSqlReq, LoginReq, MemoryReq, QueryReq, SqlReq)
 from .schema_index import SchemaIndex
 from .store import Store
 
@@ -65,7 +66,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Text-to-SQL Agent", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="Text-to-SQL Agent", version="3.1.0", lifespan=lifespan)
 
 _origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
 app.add_middleware(
@@ -119,13 +120,15 @@ def health():
     return {"ok": True, "auth_enabled": settings.auth_enabled}
 
 
-@app.get("/api/status")
-def status(_: str = Depends(require_auth)):
-    """登录后才可见的运行状态（模型、索引、开关）。"""
+def _status_payload(user: str = "") -> dict:
     idx = getattr(app.state, "index", None)
     return {
+        "user": user,
+        "role": settings.role_of(user) if user else "",
         "mock_mode": settings.MOCK_MODE,
         "llm_model": settings.LLM_MODEL,
+        "llm_provider": settings.LLM_PROVIDER,
+        "llm_chain": llm.providers_info(),
         "emb_model": settings.EMB_MODEL,
         "llm_ready": settings.llm_ready,
         "emb_ready": settings.emb_ready,
@@ -145,13 +148,25 @@ def status(_: str = Depends(require_auth)):
         "trace_enabled": settings.TRACE_ENABLED,
         "semantic_metrics": len(semantic.metrics()),
         "semantic_error": semantic.last_error(),
+        "knowledge": knowledge.stats(),
+        "max_llm_calls": settings.MAX_LLM_CALLS,
     }
 
 
+@app.get("/api/status")
+def status(user: str = Depends(require_auth)):
+    """登录后才可见的运行状态（模型、索引、开关）。"""
+    return _status_payload(user)
+
+
 @app.get("/api/config")
-def public_config(_: str = Depends(require_auth)):
+def public_config(user: str = Depends(require_auth)):
     return {
+        "user": user,
+        "role": settings.role_of(user),
         "llm_model": settings.LLM_MODEL,
+        "llm_provider": settings.LLM_PROVIDER,
+        "llm_chain": llm.providers_info(),
         "emb_model": settings.EMB_MODEL,
         "top_k_tables": settings.TOP_K_TABLES,
         "max_rows": settings.MAX_RESULT_ROWS,
@@ -176,7 +191,8 @@ def login(req: LoginReq, request: Request):
         auth.note_login_failure(ip)
         raise HTTPException(401, "用户名或密码错误")
     auth.clear_login_failures(ip)
-    return {"token": make_token(req.username), "auth_required": True}
+    return {"token": make_token(req.username), "auth_required": True,
+            "username": req.username, "role": settings.role_of(req.username)}
 
 
 @app.post("/api/logout")
@@ -364,6 +380,118 @@ async def rebuild_index(_: str = Depends(_rate_limited)):
         return await _need_index().build()
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, _client_error(e, "索引重建失败，已保留原索引")) from e
+
+
+# ---------------- 管理后台 ----------------
+@app.get("/api/admin/overview")
+def admin_overview(user: str = Depends(require_admin)):
+    st = _need_store()
+    m = tracing.metrics()
+    return {
+        "version": app.version,
+        "status": _status_payload(user),
+        "metrics": m,
+        "knowledge": knowledge.stats(),
+        "sessions": st.count_sessions(),
+        "recent_traces": (m.get("recent") or [])[:10],
+        "users": [{"username": u, "role": v["role"]}
+                  for u, v in settings.auth_users.items()],
+        "llm_chain": llm.providers_info(),
+    }
+
+
+@app.get("/api/admin/knowledge")
+def admin_knowledge(_: str = Depends(require_admin)):
+    return {"sql": knowledge.examples(), "rules": knowledge.rules(),
+            "stats": knowledge.stats()}
+
+
+@app.post("/api/admin/knowledge/sql")
+def admin_add_sql(req: KnowledgeSqlReq, user: str = Depends(require_admin)):
+    try:
+        sql = db.clean_sql(req.sql)
+    except db.SqlRejected as e:
+        raise HTTPException(400, str(e)) from e
+    try:
+        item = knowledge.add_example(
+            req.question, sql, tables=req.tables, notes=req.notes,
+            source=f"admin:{user}")
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"ok": True, "item": item, "stats": knowledge.stats()}
+
+
+@app.post("/api/admin/knowledge/from-message")
+def admin_knowledge_from_message(req: FromMessageReq,
+                                 user: str = Depends(require_admin)):
+    msg = _need_store().message_with_question(req.message_id)
+    if not msg or msg.get("role") != "assistant":
+        raise HTTPException(404, "消息不存在或不是回答")
+    question = (msg.get("question") or "").strip()
+    sql = (msg.get("sql") or "").strip()
+    if not question or not sql:
+        raise HTTPException(400, "该回答缺少问题或 SQL，无法收录")
+    try:
+        sql = db.clean_sql(sql)
+        item = knowledge.add_example(
+            question, sql, tables=list(msg.get("tables") or []),
+            notes=req.notes,
+            source=f"session:{msg.get('session_id')}#{req.message_id}")
+    except (db.SqlRejected, ValueError) as e:
+        raise HTTPException(400, str(e)) from e
+    return {"ok": True, "item": item, "stats": knowledge.stats()}
+
+
+@app.delete("/api/admin/knowledge/sql/{kid}")
+def admin_delete_sql(kid: str, _: str = Depends(require_admin)):
+    if not knowledge.delete_example(kid):
+        raise HTTPException(404, "知识样例不存在")
+    return {"ok": True, "stats": knowledge.stats()}
+
+
+@app.post("/api/admin/knowledge/rules")
+def admin_add_rule(req: KnowledgeRuleReq, user: str = Depends(require_admin)):
+    try:
+        item = knowledge.add_rule(req.text, title=req.title,
+                                  source=f"admin:{user}")
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"ok": True, "item": item, "stats": knowledge.stats()}
+
+
+@app.delete("/api/admin/knowledge/rules/{kid}")
+def admin_delete_rule(kid: str, _: str = Depends(require_admin)):
+    if not knowledge.delete_rule(kid):
+        raise HTTPException(404, "规则不存在")
+    return {"ok": True, "stats": knowledge.stats()}
+
+
+@app.get("/api/admin/sessions")
+def admin_sessions(_: str = Depends(require_admin)):
+    return {"sessions": _need_store().list_sessions(limit=500)}
+
+
+@app.get("/api/admin/history")
+def admin_history(session_id: str, _: str = Depends(require_admin)):
+    return {"history": _need_store().get_history(session_id, 50, owner=None)}
+
+
+@app.delete("/api/admin/sessions/{session_id}")
+def admin_delete_session(session_id: str, _: str = Depends(require_admin)):
+    _need_store().delete_session(session_id, owner=None)
+    return {"ok": True}
+
+
+@app.get("/api/admin/traces")
+def admin_traces(_: str = Depends(require_admin)):
+    m = tracing.metrics()
+    return {"recent": m.get("recent") or [], "traces": m.get("traces", 0)}
+
+
+@app.get("/api/admin/users")
+def admin_users(_: str = Depends(require_admin)):
+    return {"users": [{"username": u, "role": v["role"]}
+                      for u, v in settings.auth_users.items()]}
 
 
 # ---------------- 静态前端 ----------------

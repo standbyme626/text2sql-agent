@@ -8,13 +8,32 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import re
+from uuid import uuid4
 
 import httpx
 
 from . import tracing
 from .config import settings
+
+_LLM_SESSION: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "llm_session", default="")
+
+
+def set_session(session_id: str) -> None:
+    """OpenCode Go 需要稳定的 x-opencode-session 做路由与缓存。"""
+    _LLM_SESSION.set(session_id or "")
+
+
+def _session_id() -> str:
+    sid = _LLM_SESSION.get()
+    if not sid:
+        sid = uuid4().hex
+        _LLM_SESSION.set(sid)
+    return sid
+
 
 FENCE = re.compile(r"```(?:sql)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 SQL_START = re.compile(r"\b(select|with)\b", re.IGNORECASE)
@@ -164,34 +183,19 @@ def _openai_tools(tools: list[dict] | None) -> list[dict] | None:
     return tools or None
 
 
-async def _completion(messages: list[dict], max_tokens: int | None = None,
-                      tools: list[dict] | None = None) -> dict:
-    """统一 completion 入口：返回 content / tool_calls / usage。"""
-    if settings.MOCK_MODE:
-        await asyncio.sleep(0.05)
-        user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
-        if "解读" in user or "总结" in user:
-            content = "本次查询已返回结果，可按时间或分类维度进一步下钻。"
-        else:
-            content = mock_sql(user)
-        p = _estimate_tokens(messages)
-        c = _estimate_tokens([], content)
-        tracing.add_usage(p, c)
-        with tracing.span("llm.chat", model="mock", mock=True) as sp:
-            sp.update(prompt_tokens=p, completion_tokens=c)
-        return {"content": content, "tool_calls": [],
-                "usage": {"prompt_tokens": p, "completion_tokens": c}}
-
-    if not settings.LLM_API_KEY:
-        raise RuntimeError("未配置 MODELSCOPE_API_KEY（魔搭 API key）")
-
-    url = f"{settings.LLM_BASE_URL}/chat/completions"
+async def _one_call(provider: dict, messages: list[dict],
+                    max_tokens: int | None, tools: list[dict] | None) -> dict:
+    """请求单个 provider；语义化抛错，供上层决定重试还是切换兜底。"""
+    url = f"{provider['base_url']}/chat/completions"
     headers = {
-        "Authorization": f"Bearer {settings.LLM_API_KEY}",
+        "Authorization": f"Bearer {provider['api_key']}",
         "Content-Type": "application/json",
+        "User-Agent": "text2sql-agent/3.1",
     }
+    if "opencode.ai" in provider["base_url"]:
+        headers["x-opencode-session"] = _session_id()
     payload = {
-        "model": settings.LLM_MODEL,
+        "model": provider["model"],
         "messages": with_language_rule(messages),
         "temperature": settings.LLM_TEMPERATURE,
         "max_tokens": max_tokens or settings.LLM_MAX_TOKENS,
@@ -201,77 +205,137 @@ async def _completion(messages: list[dict], max_tokens: int | None = None,
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
-    last = "大模型暂时不可用，请稍后重试"
-    for attempt in range(3):
+    with tracing.span("llm.chat", model=provider["model"],
+                      provider=provider.get("provider", ""), tools=bool(tools)) as sp:
         try:
-            with tracing.span("llm.chat", model=settings.LLM_MODEL,
-                              tools=bool(tools)) as sp:
-                async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
-                    r = await client.post(url, headers=headers, json=payload)
-                if r.status_code == 429:
-                    sp.update(ok=False, status=429)
-                    body = (r.text or "").lower()
-                    if any(k in body for k in ("insufficient balance", "quota",
-                                               "insufficient_quota", "billing")):
-                        raise LLMTransientError(
-                            "模型账户额度不足，请充值或切换免费模型（见 .env 的 LLM_API_KEY/LLM_MODEL）")
-                    last = "模型 429 限流，请稍后再试"
-                    # 尊重上游 Retry-After；没有就指数退避（3/6/9s）
-                    delay = 3 * (attempt + 1)
-                    try:
-                        ra = int(r.headers.get("retry-after") or 0)
-                        if ra > 0:
-                            delay = max(3, min(30, ra))
-                    except (TypeError, ValueError):
-                        pass
-                    await asyncio.sleep(delay)
-                    continue
-                if r.status_code != 200:
-                    body = (r.text or "").lower()
-                    sp.update(ok=False, status=r.status_code)
-                    if tools and r.status_code == 400 and (
-                            "tool" in body or "function" in body):
-                        raise LLMToolUnsupported("上游不支持 tools/function calling")
-                    raise LLMTransientError(f"魔搭接口 HTTP {r.status_code}")
-                data = r.json()
-                msg = data["choices"][0]["message"]
-                content = (msg.get("content") or "").strip()
-                if not content:
-                    content = (msg.get("reasoning_content") or "").strip()
-                calls = []
-                for tc in msg.get("tool_calls") or []:
-                    fn = tc.get("function") or {}
-                    args = fn.get("arguments") or "{}"
-                    try:
-                        parsed = json.loads(args) if isinstance(args, str) else args
-                    except ValueError:
-                        parsed = {"_raw": args}
-                    calls.append({"id": tc.get("id") or "call",
-                                  "name": fn.get("name") or "",
-                                  "arguments": parsed if isinstance(parsed, dict) else {}})
-                usage = data.get("usage") or {}
-                pt = int(usage.get("prompt_tokens") or _estimate_tokens(messages))
-                ct = int(usage.get("completion_tokens") or _estimate_tokens([], content))
-                sp.update(ok=True, prompt_tokens=pt, completion_tokens=ct,
-                          tool_calls=len(calls))
-                tracing.add_usage(pt, ct)
-                if not content and not calls:
-                    raise LLMTransientError("模型返回内容为空")
-                return {"content": content, "tool_calls": calls,
-                        "usage": {"prompt_tokens": pt, "completion_tokens": ct}}
-        except LLMToolUnsupported:
-            raise
-        except LLMTransientError as e:
-            last = str(e)
-            if "HTTP" in last and "429" not in last:
-                raise
-            await asyncio.sleep(1 + attempt)
+            async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
+                r = await client.post(url, headers=headers, json=payload)
         except (httpx.TimeoutException, httpx.NetworkError) as e:
-            last = f"大模型请求超时或网络异常：{type(e).__name__}"
-            await asyncio.sleep(1 + attempt)
-        except Exception as e:  # noqa: BLE001
-            raise LLMTransientError(f"大模型调用异常：{type(e).__name__}") from e
-    raise LLMTransientError(last)
+            sp.update(ok=False, error=type(e).__name__)
+            raise LLMTransientError(
+                f"{provider.get('provider') or provider['model']} 请求超时/网络异常") from e
+
+        body = (r.text or "").lower()
+        if r.status_code == 429:
+            sp.update(ok=False, status=429)
+            if any(k in body for k in ("insufficient balance", "quota",
+                                       "insufficient_quota", "billing")):
+                raise LLMTransientError("模型账户额度不足，请检查 LLM_API_KEY 或切到兜底模型")
+            retry_after = 0
+            try:
+                retry_after = int(r.headers.get("retry-after") or 0)
+            except (TypeError, ValueError):
+                pass
+            err = LLMTransientError("模型 429 限流，请稍后再试")
+            err.retry_after = max(0, min(8, retry_after))  # type: ignore[attr-defined]
+            raise err
+        if r.status_code != 200:
+            sp.update(ok=False, status=r.status_code)
+            if tools and r.status_code == 400 and (
+                    "tool" in body or "function" in body):
+                raise LLMToolUnsupported("上游不支持 tools/function calling")
+            if r.status_code in (401, 403):
+                raise LLMTransientError(
+                    f"{provider.get('provider') or provider['model']} 鉴权失败 HTTP {r.status_code}")
+            raise LLMTransientError(
+                f"{provider.get('provider') or provider['model']} HTTP {r.status_code}")
+
+        data = r.json()
+        choices = data.get("choices") or [{}]
+        msg = choices[0].get("message") or {}
+        finish = choices[0].get("finish_reason") or ""
+        content = (msg.get("content") or "").strip()
+        # reasoning / reasoning_content 只回传给工具循环，不能当最终正文：
+        # 推理模型在 max_tokens 用尽时会只留下半截思考过程。
+        reasoning = (msg.get("reasoning_content") or msg.get("reasoning") or "").strip()
+        calls = []
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            args = fn.get("arguments") or "{}"
+            try:
+                parsed = json.loads(args) if isinstance(args, str) else args
+            except ValueError:
+                parsed = {"_raw": args}
+            calls.append({"id": tc.get("id") or "call",
+                          "name": fn.get("name") or "",
+                          "arguments": parsed if isinstance(parsed, dict) else {}})
+        usage = data.get("usage") or {}
+        pt = int(usage.get("prompt_tokens") or _estimate_tokens(messages))
+        ct = int(usage.get("completion_tokens") or _estimate_tokens([], content))
+        sp.update(ok=True, prompt_tokens=pt, completion_tokens=ct,
+                  tool_calls=len(calls), finish=finish)
+        tracing.add_usage(pt, ct)
+        if not content and not calls:
+            err = LLMTransientError(
+                f"{provider.get('provider') or provider['model']} 返回内容为空")
+            err.finish_length = (finish == "length")  # type: ignore[attr-defined]
+            raise err
+        return {"content": content, "reasoning": reasoning, "tool_calls": calls,
+                "usage": {"prompt_tokens": pt, "completion_tokens": ct}}
+
+
+async def _completion(messages: list[dict], max_tokens: int | None = None,
+                      tools: list[dict] | None = None) -> dict:
+    """统一 completion 入口：主模型优先，失败自动切兜底模型。"""
+    if settings.MOCK_MODE:
+        await asyncio.sleep(0.05)
+        user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+        if "解读" in user or "总结" in user or "followups" in user:
+            content = "本次查询已返回结果，可按时间或分类维度进一步下钻。"
+        else:
+            content = mock_sql(user)
+        p = _estimate_tokens(messages)
+        c = _estimate_tokens([], content)
+        tracing.add_usage(p, c)
+        with tracing.span("llm.chat", model="mock", provider="mock", mock=True) as sp:
+            sp.update(prompt_tokens=p, completion_tokens=c)
+        return {"content": content, "reasoning": "", "tool_calls": [],
+                "usage": {"prompt_tokens": p, "completion_tokens": c}}
+
+    chain = settings.llm_chain
+    if not chain:
+        raise RuntimeError("未配置文本模型：请在 .env 设置 LLM_BASE_URL/LLM_API_KEY/LLM_MODEL")
+
+    errors: list[str] = []
+    tool_unsupported = False
+    for provider in chain:
+        label = provider.get("provider") or provider["model"]
+        budget = max_tokens or settings.LLM_MAX_TOKENS
+        for attempt in range(2):
+            try:
+                return await _one_call(provider, messages, budget, tools)
+            except LLMToolUnsupported as e:
+                tool_unsupported = True
+                errors.append(f"{label}: {e}")
+                break                       # 该 provider 不支持 tools，直接切下一个
+            except LLMTransientError as e:
+                errors.append(f"{label}: {e}")
+                # 输出被 max_tokens 截断且正文为空：加倍重试一次
+                if getattr(e, "finish_length", False) and attempt == 0:
+                    budget = min(4096, max(256, budget * 2))
+                    continue
+                if getattr(e, "retry_after", None) and attempt == 0:
+                    await asyncio.sleep(int(getattr(e, "retry_after")))
+                    continue
+                break
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"{label}: {type(e).__name__}")
+                break
+    detail = "；".join(errors[-3:]) or "所有模型均不可用"
+    if tool_unsupported:
+        raise LLMToolUnsupported(detail)
+    raise LLMTransientError(f"所有模型均不可用：{detail}")
+
+
+def providers_info() -> list[dict]:
+    """给状态页展示的模型链路（不含 key）。"""
+    return [{
+        "provider": p.get("provider", ""),
+        "model": p["model"],
+        "base_url": p["base_url"],
+        "primary": i == 0,
+        "ready": bool(p.get("api_key")),
+    } for i, p in enumerate(settings.llm_chain)]
 
 
 async def chat(messages: list[dict], max_tokens: int | None = None) -> str:

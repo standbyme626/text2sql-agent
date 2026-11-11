@@ -15,7 +15,7 @@ import json
 import threading
 import time
 
-from fastapi import Header, HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Request
 
 from .config import settings
 
@@ -33,7 +33,8 @@ def _sign(body: str) -> str:
 
 
 def make_token(username: str) -> str:
-    payload = {"u": username, "pv": settings.password_version,
+    payload = {"u": username, "r": settings.role_of(username),
+               "pv": settings.password_version,
                "exp": int(time.time()) + settings.TOKEN_TTL_HOURS * 3600}
     body = _b64(json.dumps(payload, separators=(",", ":")).encode())
     return f"{body}.{_sign(body)}"
@@ -56,8 +57,8 @@ def token_user(token: str) -> str:
             return ""
         if p.get("pv") != settings.password_version:
             return ""
-        user = p.get("u", "")
-        if not user or not hmac.compare_digest(user, settings.AUTH_USER):
+        user = str(p.get("u", ""))
+        if not user or user not in settings.auth_users:
             return ""
         return user
     except Exception:
@@ -65,9 +66,10 @@ def token_user(token: str) -> str:
 
 
 def verify_login(username: str, password: str) -> bool:
-    ok_user = hmac.compare_digest(username, settings.AUTH_USER)
-    ok_pass = bool(settings.AUTH_PASSWORD) and hmac.compare_digest(password, settings.AUTH_PASSWORD)
-    return ok_user and ok_pass
+    rec = settings.auth_users.get(username)
+    if not rec or not rec.get("password"):
+        return False
+    return hmac.compare_digest(password, rec["password"])
 
 
 # ---------- 撤销表（进程内，重启即清空；改密由 password_version 兜底） ----------
@@ -203,3 +205,12 @@ async def require_auth(
             return user
     note_login_failure(ip)
     raise HTTPException(status_code=401, detail="token 无效或已过期")
+
+
+def require_admin(user: str = Depends(require_auth)) -> str:
+    """管理端网关：只有 admin 角色可进；无鉴权模式（本地 mock/自测）放行。"""
+    if not settings.auth_enabled:
+        return user
+    if settings.role_of(user) != "admin":
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    return user

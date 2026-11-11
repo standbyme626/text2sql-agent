@@ -34,3 +34,20 @@ class ExplainReq(BaseModel):
 
 class MemoryReq(BaseModel):
     text: str = Field(..., min_length=2, max_length=300)
+
+
+class KnowledgeSqlReq(BaseModel):
+    question: str = Field(..., min_length=2, max_length=500)
+    sql: str = Field(..., min_length=6, max_length=8000)
+    tables: list[str] = Field(default_factory=list, max_length=50)
+    notes: str = Field(default="", max_length=2000)
+
+
+class KnowledgeRuleReq(BaseModel):
+    text: str = Field(..., min_length=2, max_length=2000)
+    title: str = Field(default="", max_length=80)
+
+
+class FromMessageReq(BaseModel):
+    message_id: int = Field(..., gt=0)
+    notes: str = Field(default="", max_length=2000)

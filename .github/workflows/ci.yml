@@ -24,7 +24,7 @@ jobs:
           python backend/scripts/init_db.py
           python backend/scripts/build_index.py
 
-      - name: Self-test (109 assertions, zero API cost)
+      - name: Self-test (150 assertions, zero API cost)
         env:
           MOCK_MODE: "true"
         run: python backend/scripts/selftest.py

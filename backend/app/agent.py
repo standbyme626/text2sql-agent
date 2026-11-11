@@ -20,7 +20,7 @@ import re
 from typing import AsyncGenerator
 from uuid import uuid4
 
-from . import db, guard, llm, semantic, tools, tracing
+from . import db, guard, knowledge, llm, semantic, tools, tracing
 from .config import settings
 from .embedding import embed_one
 from .schema_index import SchemaIndex
@@ -121,13 +121,20 @@ FALLBACK_FOLLOWUPS = [
 _ZH = re.compile(r"[\u4e00-\u9fff]")
 
 
+_THINKING = re.compile(
+    r"(?i)\b(here'?s (a|the) thinking|thinking process|we need|let me|"
+    r"the user (wants|asks)|analy[sz]e user|chain of thought)\b")
+
 def is_chinese(text: str, min_zh: int = 2) -> bool:
     """中文结论判定：汉字数量达标，且英文单词不能压过中文。
 
     旧实现只看「汉字 >= 2」，会把 "We need answer JSON only ... 2026" 这类
-    模型元话语当成中文结论放过去。现在要求英文单词数不超过汉字数。
+    模型元话语当成中文结论放过去。现在要求英文单词数不超过汉字数，
+    并直接拒绝明显的英文思考过程（即使引用了中文原问题）。
     """
     t = str(text or "")
+    if _THINKING.search(t):
+        return False
     zh = len(_ZH.findall(t))
     en = len(re.findall(r"[A-Za-z]{2,}", t))
     return zh >= min_zh and en <= max(3, zh)
@@ -214,6 +221,7 @@ def build_messages(question: str, ctx: str, history: list[dict],
     """标准 role 交替 messages；tool 模式与 workflow 模式共用历史/上下文构造。"""
     system = (TOOL_SYSTEM_PROMPT if mode == "toolloop" else BASE_SYSTEM_PROMPT)
     system += "\n" + semantic.prompt_block(question)
+    system += knowledge.rules_block()
     if memory:
         system += ("\n【用户长期偏好（最高优先级，覆盖默认业务口径）】\n"
                    + "\n".join(f"- {m}" for m in memory))
@@ -632,7 +640,7 @@ async def _tool_loop(state: dict, sid: str):
 
         if calls:
             if native:
-                messages.append({
+                assistant_msg = {
                     "role": "assistant",
                     "content": resp.get("content") or None,
                     "tool_calls": [
@@ -642,7 +650,11 @@ async def _tool_loop(state: dict, sid: str):
                                                               ensure_ascii=False)}}
                         for c in calls
                     ],
-                })
+                }
+                # DeepSeek / OpenCode Go 要求 assistant 消息回传 reasoning_content
+                if resp.get("reasoning"):
+                    assistant_msg["reasoning_content"] = resp["reasoning"]
+                messages.append(assistant_msg)
             else:
                 messages.append({"role": "assistant",
                                  "content": resp.get("content") or ""})
@@ -983,6 +995,7 @@ async def run_agent(question: str, session_id: str | None = None,
     assert index is not None and store is not None, "Agent 未初始化"
 
     sid = session_id or uuid4().hex[:16]
+    llm.set_session(sid)
     store.ensure_session(sid, owner=owner)
     store.add_message(sid, "user", question)
 
@@ -1026,6 +1039,12 @@ async def run_agent(question: str, session_id: str | None = None,
              if h["role"] == "assistant" and h["sql"]), "")
         fewshot = store.similar(question, qvec, settings.FEWSHOT_K,
                                 allowed_tables=set(n.lower() for n in state["names"]))
+        # 正式知识库（knowledge/sql）优先于自动积累的 few-shot；按问题去重
+        verified = knowledge.recall(question, settings.FEWSHOT_K,
+                                    allowed_tables=set(n.lower() for n in state["names"]))
+        seen = {f["question"] for f in verified}
+        fewshot = verified + [f for f in fewshot if f["question"] not in seen]
+        fewshot = fewshot[:settings.FEWSHOT_K]
         colmap = {t["name"]: t.get("matched_columns") or [] for t in tables}
         ctx_text = index.prompt_context(state["names"], colmap)
         mode = settings.AGENT_MODE if settings.AGENT_MODE in ("toolloop", "workflow") \

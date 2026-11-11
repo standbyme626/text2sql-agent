@@ -8,6 +8,11 @@
         <div class="logo">S</div>
         <div>Text-to-SQL Agent<small>电商数据自然语言问答 · {{ meta?.total || 50 }} 张表</small></div>
       </div>
+      <div class="view-tabs">
+        <button class="tbtn" :class="{ active: view === 'chat' }" @click="switchView('chat')">问答</button>
+        <button v-if="isAdmin" class="tbtn" :class="{ active: view === 'admin' }"
+                @click="switchView('admin')">管理</button>
+      </div>
       <div class="badges">
         <span class="badge">{{ status?.llm_model || 'LLM 加载中' }}</span>
         <span class="badge">{{ status?.emb_model || 'Embedding' }}</span>
@@ -18,14 +23,14 @@
         <span class="badge warn" v-if="status?.mock_mode">Mock 模式</span>
       </div>
       <div class="spacer"></div>
-      <button class="tbtn hide-mobile" @click="shareSession" :disabled="!sid">复制会话链接</button>
-      <button class="tbtn hide-mobile" @click="rebuildIndex" :disabled="busy || rebuilding">
+      <button v-if="view === 'chat'" class="tbtn hide-mobile" @click="shareSession" :disabled="!sid">复制会话链接</button>
+      <button v-if="view === 'chat'" class="tbtn hide-mobile" @click="rebuildIndex" :disabled="busy || rebuilding">
         {{ rebuilding ? '重建中…' : '重建向量索引' }}</button>
-      <button class="tbtn" :class="{ active: showSchema }" @click="showSchema = !showSchema; menuOpen = false">表结构</button>
+      <button v-if="view === 'chat'" class="tbtn" :class="{ active: showSchema }" @click="showSchema = !showSchema; menuOpen = false">表结构</button>
       <button class="tbtn hide-mobile" v-if="health?.auth_enabled && !basicMode" @click="logout">退出</button>
     </header>
 
-    <div class="body">
+    <div class="body" v-if="view === 'chat'">
       <aside class="sidebar" :class="{ open: menuOpen }">
         <button class="drawer-close" aria-label="关闭菜单" @click="menuOpen = false">×</button>
         <button class="new-chat" @click="newSession">+ 新会话</button>
@@ -48,6 +53,8 @@
           <div>{{ status?.emb_model }}</div>
         </div>
         <div class="side-title mobile-only">更多</div>
+        <div class="quick-item mobile-only" v-if="isAdmin && view === 'chat'"
+             @click="switchView('admin'); menuOpen = false">管理后台</div>
         <div class="quick-item mobile-only" @click="shareSession(); menuOpen = false">复制会话链接</div>
         <div class="quick-item mobile-only" @click="rebuildIndex(); menuOpen = false">重建向量索引</div>
         <div class="quick-item mobile-only" v-if="health?.auth_enabled && !basicMode"
@@ -157,6 +164,8 @@
       <SchemaPanel v-if="showSchema" :tables="meta?.tables || []" @close="showSchema = false" />
     </div>
 
+    <AdminPanel v-else :status="status" :health="health" @toast="showToast" @open-chat="switchView('chat')" />
+
     <div class="drawer-mask" v-if="menuOpen || showSchema" @click="closeDrawers"></div>
     <div class="toast" v-if="toastText">{{ toastText }}</div>
 
@@ -175,17 +184,18 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { api, getLastUser, getToken, setToken, streamQuery } from './api'
+import { api, getLastUser, getRole, getToken, setRole, setToken, streamQuery } from './api'
 import SqlBlock from './components/SqlBlock.vue'
 import ResultPanel from './components/ResultPanel.vue'
 import SchemaPanel from './components/SchemaPanel.vue'
+import AdminPanel from './components/AdminPanel.vue'
 
 const health = ref(null)
 const status = ref(null)
 const cfg = ref(null)
 const meta = ref(null)
 const needLogin = ref(false)
-const loginUser = ref(getLastUser() || 'admin')
+const loginUser = ref(getLastUser())
 const loginPass = ref('')
 const loginErr = ref('')
 const sessions = ref([])
@@ -199,6 +209,9 @@ const menuOpen = ref(false)
 const msgBox = ref(null)
 const inputBox = ref(null)
 const basicMode = ref(false)
+const role = ref(getRole())
+const view = ref('chat')
+const isAdmin = computed(() => role.value === 'admin')
 const toastText = ref('')
 const pending = ref('')
 const streamGen = ref(0)
@@ -225,7 +238,15 @@ function showToast(t) {
 function onUnauthorized() {
   abortActive()
   setToken('')
+  setRole('')
+  role.value = ''
+  view.value = 'chat'
   needLogin.value = true
+}
+function switchView(v) {
+  view.value = v
+  menuOpen.value = false
+  showSchema.value = false
 }
 function onKey(e) {
   if (e.key === 'Escape' && !e.target?.classList?.contains('schema-search')) closeDrawers()
@@ -275,6 +296,7 @@ onBeforeUnmount(() => {
 async function bootstrap() {
   try {
     cfg.value = await api.config()
+    role.value = cfg.value.role || getRole()
     meta.value = await api.meta()
     health.value = await api.health()
     status.value = await api.status()
@@ -289,7 +311,8 @@ async function bootstrap() {
 async function doLogin() {
   loginErr.value = ''
   try {
-    await api.login(loginUser.value, loginPass.value)
+    const login = await api.login(loginUser.value, loginPass.value)
+    role.value = login.role || getRole()
     needLogin.value = false
     basicMode.value = false
     loginPass.value = ''
@@ -309,6 +332,9 @@ function resetState() {
 async function logout() {
   await api.logout()
   setToken('')
+  setRole('')
+  role.value = ''
+  view.value = 'chat'
   menuOpen.value = false
   needLogin.value = true
   resetState()

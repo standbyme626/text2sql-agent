@@ -4,7 +4,7 @@
 
 **中文 Text-to-SQL / Data Agent · 2026 tool-calling 架构**
 
-工具调用循环 · 受治理语义层 · 列级 schema linking · MCP Server · 执行准确率评测 · Trace 观测
+工具调用循环 · 受治理语义层 · 文件知识库 · 管理后台 · MCP Server · 执行准确率评测 · Trace 观测
 
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white)
@@ -23,11 +23,11 @@
 
 </div>
 
-> **项目状态：v3.0 / 2026 Agent 架构 / 单实例演示。**
-> 曾在公网域名上以「应用层登录 + 只读闸门」对外提供过一段时间，单账号使用；
+> **项目状态：v3.1 / 2026 Agent 架构 / 单实例演示。**
+> 支持管理员 + 普通用户两种角色；管理员可在「管理后台」维护知识库、语义指标、会话轨迹与运行状态。
 > 仓库不含数据库文件、向量索引与任何密钥，首次运行按第 8 节初始化，约 1 分钟建好 50 张表。
 
-**50 张表** · **51,899 行** · **tool-calling Agent** · **5 个工具 + MCP** · **131 项自测** · **单轮 ≤ 6 次 LLM 调用**
+**50 张表** · **51,899 行** · **tool-calling Agent** · **5 个工具 + MCP** · **150 项自测** · **单轮 ≤ 6 次 LLM 调用** · **主备模型链路**
 
 ---
 
@@ -76,16 +76,18 @@ Text-to-SQL 的 demo 半天能写完，但它离「能给别人用」差一段�
 - 拒答分两层：规则前置零成本，模型协议处理模糊问题；
 - 全链路 **trace + token/延迟/工具失败率** 观测，查询可回放。
 
-### 1.3 八个平面
+### 1.3 十个平面
 
 | 平面 | 职责 | 入口 |
 |---|---|---|
-| 策略 | 配置快照、次数上限钳制、鉴权开关 | `config.py` |
+| 策略 | 配置快照、次数上限钳制、鉴权开关、主备模型链路 | `config.py` |
 | Agent | tool-calling 循环 / workflow 降级 / 上下文组装 | `agent.py` / `tools.py` |
 | 语义 | 指标口径、标准 JOIN、方言日期函数 | `semantic/metrics.yaml` / `semantic.py` |
-| 治理 | 只读闸门、拒答护栏、限流 | `db.py` / `guard.py` / `auth.py` |
+| 知识 | 文件化 NL→SQL 样例与业务规则（可提交、可审计） | `knowledge/` / `knowledge.py` |
+| 治理 | 只读闸门、拒答护栏、限流、RBAC | `db.py` / `guard.py` / `auth.py` |
 | 数据 | 50 表 schema、SQLite/Postgres、向量索引、会话/few-shot/记忆 | `schema_index.py` / `store.py` / `db.py` |
 | 接口 | Web SSE + **MCP stdio server** | `main.py` / `mcp_server.py` |
+| 管理 | 概览、知识库、语义指标、会话轨迹、账号与运维 | `main.py::/api/admin/*` / `AdminPanel.vue` |
 | 观测 | trace / span / token / p50-p95 / 工具失败率 | `tracing.py` |
 | 交互 | 会话、SQL 编辑重跑、图表、Agent 轨迹时间线 | `frontend/src/` |
 
@@ -109,6 +111,10 @@ Text-to-SQL 的 demo 半天能写完，但它离「能给别人用」差一段�
 | **只读闸门** — 剥离字面量后校验关键字/注释/多语句；强制顶层 LIMIT；5s 超时 | `db.py::clean_sql`、`_top_level_limit` |
 | **双层自纠正** — toolloop 内模型自主重试；workflow 报错/0 行/缺表回灌；单轮硬预算 | `agent.py::_tool_loop`、`_workflow_loop` |
 | **自动解读** — 默认自动生成结论 + 追问；AI 不可用时回退确定性数据摘要，结果区不留空 | `agent.py::build_insight`、`_fallback_insight` |
+| **主备模型链路** — 默认 opencode-go DeepSeek V4.1 Flash；429/超时/空返回自动切 OpenRouter 免费模型，trace 标记实际 provider | `llm.py::_completion`、`providers_info` |
+| **文件知识库（Wren AI 风格）** — `knowledge/sql/*.md` 正式样例 + `knowledge/rules/*.md` 业务规则；markdown 是唯一真相，检索只是派生层 | `knowledge.py`、`knowledge/` |
+| **多账号 RBAC** — `AUTH_USERS` 配置 admin/user；普通用户只能问答，管理端 API 403 | `auth.py::require_admin`、`config.py` |
+| **管理后台** — 概览 / 知识库 / 语义指标 / 全部会话 / Trace / 账号与运维，风格与问答端一致 | `AdminPanel.vue`、`/api/admin/*` |
 | **拒答引导** — 规则前置拦截无关/越权/注入；模糊问题给可点击的正确问法 | `guard.py::check`、`parse_refusal` |
 | **会话还原** — 完整回答结构化落库（`payload`），切走再切回表格/图表/结论都在 | `store.py::add_answer`、`get_history` |
 | **鉴权** — 中文登录页 + HMAC token，签名绑定密码版本；登录失败按 IP 限流 | `auth.py::make_token`、`rate_ok` |
@@ -233,16 +239,19 @@ Text-to-SQL 的 demo 半天能写完，但它离「能给别人用」差一段�
 | `.secret_key` | token 签名密钥 | 首次启动 `O_EXCL` 原子创建，权限 600 |
 | `traces.jsonl` | trace / span / token | OTel 语义兼容 JSONL，600；`/api/metrics` 读进程内最近 N 条 |
 | `semantic/metrics.yaml` | 受治理指标层 | 版本化指标、标准 JOIN、方言日期函数；`/api/semantic` 可审计 |
+| `knowledge/sql/*.md` | 已确认 NL→SQL 样例 | 管理员确认后写入；可提交、可 review、可回滚 |
+| `knowledge/rules/*.md` | 团队业务规则 | 注入 system prompt，优先级高于默认口径 |
 | `user_memory`（app.db） | 跨会话偏好 | 仅显式「记住/以后/默认」写入；按中文二元组召回注入 |
 
 ### 4.4 模型供给
 
-- **文本**：`deepseek-ai/DeepSeek-V4.1-Flash-1017`（魔搭 ModelScope，OpenAI 兼容）；
+- **主模型**：`deepseek-v4.1-flash`（opencode-go，OpenAI 兼容，base URL `https://opencode.ai/inference/go/openai/v1`）；请求带稳定的 `x-opencode-session` 头用于路由与缓存；
+- **兜底模型**：`baidu/ernie-5.5-flash-preview:free`（OpenRouter，免费）；主模型 429 / 超时 / 空返回时自动切换，trace span 标记实际 provider 与 model；
 - **向量**：`Qwen/Qwen3-Embedding-8B`（硅基流动，1024 维），只用于选表与 few-shot 检索；
 - **工具调用**：默认发送 OpenAI `tools` + `tool_choice=auto`；上游返回 400/不支持时自动回退 workflow，不影响可用性；
-- **可替换**：两个端点都是 OpenAI 兼容协议，改 `.env` 的 `LLM_BASE_URL` / `LLM_MODEL` 即可换成别家；
-- **降级顺序**：toolloop → workflow；向量选表 → 关键词选表；自动结论失败 → 前端提示可手动「AI 解读」；无 Key → `MOCK_MODE`。
-- **免费兜底**：ModelScope 额度耗尽时，可把 `LLM_BASE_URL` 指向 OpenRouter，使用带 `:free` 后缀的模型（如 `nvidia/nemotron-3-ultra-550b-a55b:free`），并设置通用 `LLM_API_KEY`；**本项目任何情况下不调用收费模型**。
+- **可替换**：所有端点都是 OpenAI 兼容协议，改 `.env` 的 `LLM_BASE_URL` / `LLM_MODEL` / `LLM_FALLBACK_*` 即可换链路；
+- **降级顺序**：主模型 → 兜底模型 → workflow；向量选表 → 关键词选表；自动结论失败 → 确定性数据摘要 + 前端可手动「AI 解读」；无 Key → `MOCK_MODE`。
+- **OpenRouter 约束**：兜底只使用 pricing 全 0 的 `:free` 模型；**本项目任何情况下不调用收费模型**。
 
 ---
 
@@ -308,12 +317,22 @@ metrics:
 - 文件缺失或 YAML 损坏时自动退回内置口径，服务不中断；
 - 换 Postgres 时用 `dialects.postgres.date_month = date_trunc(...)`，同一指标定义跨方言复用。
 
-### 5.6 跨会话记忆
+### 5.6 跨会话记忆与文件知识库
+
+**用户偏好**（隐式记忆）：
 
 - 只有用户明确说「记住 / 以后 / 默认」时，模型才会调用 `remember_preference` 写入；
 - 写入 `app.db` 的 `user_memory` 表，按 owner 隔离，每用户最多 100 条；
 - 每轮按中文二元组召回 Top-3 注入 prompt，零 embedding 调用；
 - `GET/POST/DELETE /api/memory` 可人工审计与删除，不做隐式画像。
+
+**确认知识**（显式、可审计，参考 Wren AI memory 分层）：
+
+- `knowledge/sql/*.md` 存「已确认的 NL→SQL 样例」，`knowledge/rules/*.md` 存业务规则；
+- markdown 是唯一真相，`qa_history` 与向量只是派生检索层；
+- 管理员可在「管理后台 → 会话轨迹」把一条验证过的回答一键收录，也可在「知识库」手写；
+- 每轮把 `knowledge/rules` 注入 system prompt，把正式样例与自动 few-shot 合并召回（正式样例优先）；
+- 文件可进 Git，code review、diff、回滚都能用；删除后缓存自动失效，无需重启。
 
 ### 5.7 可调参数
 
@@ -400,7 +419,7 @@ metrics:
 
 - Python 3.11+（推荐 3.12）
 - Node.js 18+（只在需要构建前端时需要）
-- 两个 API Key：文本模型（魔搭）、embedding 模型（硅基流动）
+- 模型 Key：文本主模型（opencode-go）、文本兜底（OpenRouter 免费模型，可选）、embedding（硅基流动）
 - 不想申请 Key 时可用 `MOCK_MODE=true` 走本地伪向量 + 规则 SQL
 
 ### 8.2 环境变量
@@ -414,8 +433,9 @@ cp .env.example .env
 | 分组 | 键 |
 |---|---|
 | 服务 | `HOST`、`PORT`、`PUBLIC_BASE_PATH`、`CORS_ORIGINS` |
-| 鉴权 | `AUTH_USER`、`AUTH_PASSWORD`、`TOKEN_TTL_HOURS`、`SECRET_KEY` |
-| 文本模型 | `LLM_BASE_URL`、`LLM_API_KEY`（优先）/ `MODELSCOPE_API_KEY`、`LLM_MODEL`、`LLM_TIMEOUT`、`LLM_MAX_TOKENS` |
+| 鉴权 | `AUTH_USERS`（`user:pass:role`，逗号分隔）、`AUTH_USER` / `AUTH_PASSWORD`（旧单账号兼容）、`TOKEN_TTL_HOURS`、`SECRET_KEY` |
+| 文本模型 | `LLM_PROVIDER`、`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`、`LLM_FALLBACK_PROVIDER`、`LLM_FALLBACK_BASE_URL`、`LLM_FALLBACK_API_KEY`、`LLM_FALLBACK_MODEL`、`LLM_TIMEOUT`、`LLM_MAX_TOKENS` |
+| 知识库 | `KNOWLEDGE_DIR`（默认项目根 `knowledge/`） |
 | 向量模型 | `EMB_BASE_URL`、`SILICONFLOW_API_KEY`、`EMB_MODEL`、`EMB_DIM` |
 | Agent | `AGENT_MODE`、`MAX_AGENT_STEPS`、`MAX_TOOL_SQL`、`TOP_K_TABLES`、`FK_EXPAND_MAX`、`MAX_SQL_RETRY`、`MAX_LLM_CALLS`、`AUTO_INSIGHT`、`EMPTY_RESULT_RETRY` |
 | 语义 / 数据源 | `SEMANTIC_FILE`、`DATABASE_URL`（Postgres）、`COLUMN_LINK_TOPK`、`TOOL_ROW_PREVIEW` |
@@ -502,7 +522,7 @@ curl -s http://127.0.0.1:3388/api/status -H "X-App-Token: <token>"
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/api/health` | 存活探针，仅返回 `ok` 与 `auth_enabled` |
-| `POST` | `/api/login` | `{username,password}` → `{token,auth_required}` |
+| `POST` | `/api/login` | `{username,password}` → `{token,role,username,auth_required}` |
 | `POST` | `/api/logout` | 撤销当前 token |
 | `GET` | `/api/status` | 选表模式、索引错误、模型就绪度、各项开关 |
 | `GET` | `/api/meta` | 50 张表元信息 |
@@ -520,13 +540,23 @@ curl -s http://127.0.0.1:3388/api/status -H "X-App-Token: <token>"
 | `GET` | `/api/traces/{trace_id}` | 单次查询的 span 明细 |
 | `GET/POST/DELETE` | `/api/memory` | 用户长期偏好：列出 / 写入 / 清空 |
 | `DELETE` | `/api/memory/{id}` | 删除单条偏好 |
+| `GET` | `/api/admin/overview` | 管理端概览：状态、模型链路、指标、知识库统计、最近 trace |
+| `GET/POST/DELETE` | `/api/admin/knowledge` | 知识库：列出 / 新增 SQL 样例与规则 / 删除 |
+| `POST` | `/api/admin/knowledge/from-message` | 把一条已验证回答收录为正式样例 |
+| `GET` | `/api/admin/sessions` | 全部用户会话（不限 owner） |
+| `GET` | `/api/admin/history?session_id=` | 任意会话完整消息 |
+| `DELETE` | `/api/admin/sessions/{id}` | 删除任意会话 |
+| `GET` | `/api/admin/traces` | 最近 trace 列表 |
+| `GET` | `/api/admin/users` | 账号与角色（不返回密码） |
+
+> `/api/admin/*` 需要 `role=admin`；普通用户返回 `403`。
 
 ### 9.2 提问示例
 
 ```bash
 TOKEN=$(curl -s -X POST http://127.0.0.1:3388/api/login \
   -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"***"}' | jq -r .token)
+  -d '{"username":"sqladmin","password":"***"}' | jq -r .token)
 
 curl -N -X POST http://127.0.0.1:3388/api/query \
   -H "X-App-Token: $TOKEN" -H 'Content-Type: application/json' \
@@ -635,7 +665,7 @@ DOMAIN=sql.example.com sudo -E bash /tmp/text2sql-deploy/setup-edge.sh
 MOCK_MODE=true .venv/bin/python backend/scripts/selftest.py
 ```
 
-**131 项断言**，跑在独立临时数据目录上，不碰开发库、不消耗外部额度，结束自动清理。
+**150 项断言**，跑在独立临时数据目录上，不碰开发库、不消耗外部额度，结束自动清理。
 覆盖新增的 tool-calling 循环（假模型注入）、语义层、列级 linking、trace、记忆、MCP 握手、eval 冒烟。
 
 | 组 | 覆盖内容 |
@@ -687,7 +717,7 @@ BIRD 模式按 `difficulty` 分组统计，可作为模型/提示词改动的回
 
 ## 12. 已知限制与未验证事项
 
-1. **单账号**：鉴权是「一个账号 + HMAC token」，没有 RBAC；多人共用靠会话 owner 隔离，额度与审计按实例算；
+1. **角色只有两级**：`admin` / `user`，账号在 `.env` 的 `AUTH_USERS` 里静态配置；没有用户注册、细粒度权限或按用户的额度配额；
 2. **数据库方言**：已支持 SQLite / PostgreSQL；MySQL、BigQuery、Snowflake 还需补方言与只读连接器；
 3. **50 表规模假设**：上千张表时 Top-K 会漏表，需要先选业务域再选表的分层检索（列级 linking 只缓解不根治）；
 4. **语义层是轻量版**：YAML 指标 + 关键词匹配，不是 dbt metrics / MDL 那种带血缘、物化与审批的完整语义层；
@@ -737,7 +767,8 @@ text2sql-agent/
 │   │   ├── schema_index.py    # 向量选表 + 列级 linking + 外键闭包
 │   │   ├── store.py           # 会话 / 消息 / few-shot / 用户长期记忆
 │   │   ├── auth.py            # HMAC token / 登录限流 / token 撤销
-│   │   ├── llm.py             # OpenAI 兼容客户端 + SQL 提取 + 语言规则
+│   │   ├── llm.py             # OpenAI 兼容客户端 + 主备链路 + SQL 提取
+│   │   ├── knowledge.py       # 文件知识库（sql/rules）加载与召回
 │   │   ├── embedding.py       # 向量模型客户端 + 伪向量（Mock）
 │   │   ├── config.py          # 全部配置，只从 .env 读
 │   │   └── models.py          # 请求体校验
@@ -747,13 +778,14 @@ text2sql-agent/
 │   │   ├── build_index.py     # 构建向量索引
 │   │   ├── build_meta_pg.py   # Postgres 内省 → schema_meta.json
 │   │   ├── eval.py            # golden / BIRD 执行准确率评测
-│   │   └── selftest.py        # 131 项全链路自测
+│   │   └── selftest.py        # 150 项全链路自测
 │   ├── semantic/metrics.yaml  # 受治理指标层（唯一真相）
 │   ├── mcp_server.py          # MCP stdio server（只读工具）
 │   └── data/                  # 运行期生成（.gitignore）
 ├── frontend/src/              # Vue 3 源码
-│   └── components/            # ResultPanel / SchemaPanel / SqlBlock
+│   └── components/            # ResultPanel / SchemaPanel / SqlBlock / AdminPanel
 ├── deploy/                    # systemd / nginx / 隧道 / 证书 / 上线脚本
+├── knowledge/                 # 可审计文件知识库（sql/ + rules/）
 ├── eval/
 │   └── golden.yaml            # 26 条业务 golden + 3 条拒答
 ├── docs/
@@ -770,11 +802,11 @@ text2sql-agent/
 
 | 面 | 做法 |
 |---|---|
-| 认证 | 应用层登录页 + HMAC token（`X-App-Token`），签名绑定密码版本，改密/换 `SECRET_KEY` 后旧 token 立即失效 |
+| 认证 | 应用层登录页 + HMAC token（`X-App-Token`），支持 admin/user 两级角色；签名绑定账号表版本，改密/增删账号/换 `SECRET_KEY` 后旧 token 立即失效 |
 | 限流 | 登录失败按 IP 计数并封禁；高消耗端点按 token+IP 滑动窗口；只信任反代覆盖后的远端 IP |
 | 只读 | 剥离字面量后校验；单语句；顶层 LIMIT；5s 超时；SQLite `mode=ro` + `query_only`；Postgres 默认事务只读 + `statement_timeout` |
 | 越权 | 拦截写操作、`PRAGMA` / `ATTACH` / `VACUUM`、`randomblob` 资源耗尽、提示注入变体 |
-| 数据隔离 | 会话绑定 owner，列表/历史/删除均按身份过滤 |
+| 数据隔离 | 会话绑定 owner，列表/历史/删除均按身份过滤；管理端接口单独走 `require_admin` |
 | 静态资源 | SPA 兜底路径做 `resolve()` 前缀校验，杜绝 `../` 读到 `.env` / `.secret_key` |
 | 错误 | 异常类名、SQLite 报错、上游响应正文只进服务端日志，客户端只见稳定文案 |
 | 密钥 | 仅 `.env`（600），数据目录 0700，`.secret_key` 用 `O_EXCL` 创建；不进 Git、不打进镜像、不写日志 |
@@ -793,6 +825,8 @@ text2sql-agent/
 - [x] Tool-calling Agent loop + MCP stdio server
 - [x] Trace 观测（OTel 语义兼容 JSONL + `/api/metrics`）
 - [x] 跨会话用户偏好记忆（显式写入 + 召回）
+- [x] 文件知识库 + 管理后台 + 多账号 RBAC
+- [x] 模型主备链路（opencode-go → OpenRouter 免费兜底）
 - [ ] 千表规模的分层检索（先选业务域，再选表）
 - [ ] MySQL / BigQuery / Snowflake 连接器
 - [x] CI：`MOCK_MODE` 自测 + 前端构建 + golden 回归

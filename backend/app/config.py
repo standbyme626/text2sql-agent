@@ -75,19 +75,29 @@ class Settings:
     CORS_ORIGINS: str = os.getenv("CORS_ORIGINS", "")
 
     # --- 鉴权（公网暴露必填） ---
+    # AUTH_USERS=user:pass:role,user2:pass2:role2（role=admin|user）
+    # 未配置时回退旧的单账号 AUTH_USER/AUTH_PASSWORD（角色固定 admin）
+    AUTH_USERS: str = os.getenv("AUTH_USERS", "")
     AUTH_USER: str = os.getenv("AUTH_USER", "admin")
     AUTH_PASSWORD: str = os.getenv("AUTH_PASSWORD", "")
     SECRET_KEY: str = _secret_key()
     TOKEN_TTL_HOURS: int = _clamped("TOKEN_TTL_HOURS", 24, 1, 168)
 
-    # --- 文本大模型：魔搭 ModelScope ---
-    LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "https://api-inference.modelscope.cn/v1").rstrip("/")
-    # 通用 key 优先；兼容旧配置的 MODELSCOPE_API_KEY
+    # --- 文本大模型：主模型 + 兜底模型 ---
+    # 主模型默认 opencode-go DeepSeek V4.1 Flash；兜底保留 OpenRouter 免费模型
+    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "opencode-go")
+    LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "https://opencode.ai/inference/go/openai/v1").rstrip("/")
     LLM_API_KEY: str = (os.getenv("LLM_API_KEY") or
                         os.getenv("MODELSCOPE_API_KEY", ""))
-    LLM_MODEL: str = os.getenv("LLM_MODEL", "deepseek-ai/DeepSeek-V4.1-Flash-1017")
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "deepseek-v4.1-flash")
+    LLM_FALLBACK_PROVIDER: str = os.getenv("LLM_FALLBACK_PROVIDER", "openrouter")
+    LLM_FALLBACK_BASE_URL: str = os.getenv(
+        "LLM_FALLBACK_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
+    LLM_FALLBACK_API_KEY: str = os.getenv("LLM_FALLBACK_API_KEY", "")
+    LLM_FALLBACK_MODEL: str = os.getenv(
+        "LLM_FALLBACK_MODEL", "baidu/ernie-5.5-flash-preview:free")
     LLM_TIMEOUT: int = _clamped("LLM_TIMEOUT", 120, 10, 300)
-    LLM_MAX_TOKENS: int = _clamped("LLM_MAX_TOKENS", 4096, 256, 8192)
+    LLM_MAX_TOKENS: int = _clamped("LLM_MAX_TOKENS", 8192, 256, 16384)
     LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.1"))
 
     # --- 向量模型：硅基流动 SiliconFlow ---
@@ -101,6 +111,10 @@ class Settings:
     DATABASE_URL: str = os.getenv("DATABASE_URL", "").strip()
     SEMANTIC_FILE: str = (os.getenv("SEMANTIC_FILE") or
                           str(BACKEND_DIR / "semantic" / "metrics.yaml"))
+    # 文件知识库（Wren AI 风格）：knowledge/sql/*.md + knowledge/rules/*.md
+    # 可版本化、可审计；索引与 few-shot 只是派生层
+    KNOWLEDGE_DIR: str = (os.getenv("KNOWLEDGE_DIR") or
+                          str(PROJECT_DIR / "knowledge"))
 
     # --- Agent 参数 ---
     # toolloop = 2026 工具调用循环；workflow = 旧固定流水线（不支持的模型可回退）
@@ -172,19 +186,59 @@ class Settings:
 
     @property
     def auth_enabled(self) -> bool:
-        return bool(self.AUTH_PASSWORD)
+        return bool(self.auth_users)
+
+    @property
+    def auth_users(self) -> dict[str, dict[str, str]]:
+        """账号表：AUTH_USERS 优先，否则回退单账号 AUTH_USER/AUTH_PASSWORD。"""
+        raw = (self.AUTH_USERS or "").strip()
+        users: dict[str, dict[str, str]] = {}
+        if raw:
+            for item in raw.split(","):
+                parts = item.strip().split(":", 2)
+                if len(parts) < 2 or not parts[0] or not parts[1]:
+                    continue
+                role = (parts[2] if len(parts) > 2 else "user").strip().lower()
+                users[parts[0].strip()] = {
+                    "password": parts[1],
+                    "role": "admin" if role == "admin" else "user",
+                }
+        if not users and self.AUTH_PASSWORD:
+            users[self.AUTH_USER] = {"password": self.AUTH_PASSWORD, "role": "admin"}
+        return users
+
+    def role_of(self, username: str) -> str:
+        return (self.auth_users.get(username) or {}).get("role", "")
 
     @property
     def password_version(self) -> str:
-        """改密码 / 轮换 SECRET_KEY 后，已签发的旧 token 立即失效。"""
+        """改密码 / 增删账号 / 轮换 SECRET_KEY 后，已签发的旧 token 立即失效。"""
         import hashlib
+        creds = ";".join(f"{u}:{v['password']}:{v['role']}"
+                         for u, v in sorted(self.auth_users.items()))
         return hashlib.sha256(
-            (self.AUTH_PASSWORD + "|" + self.SECRET_KEY).encode()
+            (creds + "|" + self.SECRET_KEY).encode()
         ).hexdigest()[:8]
 
     @property
+    def llm_chain(self) -> list[dict[str, str]]:
+        """主模型在前、兜底模型在后；缺 key 的条目自动跳过。"""
+        chain = [
+            {"provider": self.LLM_PROVIDER, "base_url": self.LLM_BASE_URL,
+             "api_key": self.LLM_API_KEY, "model": self.LLM_MODEL},
+        ]
+        if self.LLM_FALLBACK_API_KEY and self.LLM_FALLBACK_MODEL:
+            chain.append({
+                "provider": self.LLM_FALLBACK_PROVIDER,
+                "base_url": self.LLM_FALLBACK_BASE_URL,
+                "api_key": self.LLM_FALLBACK_API_KEY,
+                "model": self.LLM_FALLBACK_MODEL,
+            })
+        return [c for c in chain if c["base_url"] and c["api_key"] and c["model"]]
+
+    @property
     def llm_ready(self) -> bool:
-        return self.MOCK_MODE or bool(self.LLM_API_KEY)
+        return self.MOCK_MODE or bool(self.llm_chain)
 
     @property
     def emb_ready(self) -> bool:

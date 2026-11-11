@@ -39,7 +39,7 @@ os.environ.update({
 sys.path.insert(0, str(BACKEND))
 
 from fastapi.testclient import TestClient  # noqa: E402
-from app import auth, db, guard, llm  # noqa: E402
+from app import auth, db, guard, knowledge, llm  # noqa: E402
 from app.agent import (_agent_call_budget, _dimension_stacked,
                        _dropped_constraints, _fallback_insight,
                        _followup_dimension_hint, _is_empty_result,
@@ -112,6 +112,76 @@ def main():
         check("rate_ok 可拒绝", auth.rate_ok("selftest-k", 1)
               and not auth.rate_ok("selftest-k", 1))
         object.__setattr__(settings, "RATE_LIMIT_ENABLED", False)
+
+        # ---------- 1.1 多账号 / 管理端 / 文件知识库 ----------
+        old_users = settings.AUTH_USERS
+        old_kdir = settings.KNOWLEDGE_DIR
+        kdir = TMP_DATA / "knowledge"
+        object.__setattr__(settings, "AUTH_USERS",
+                           "admin:selftest-password:admin,guest:guest-pw:user")
+        object.__setattr__(settings, "KNOWLEDGE_DIR", str(kdir))
+        knowledge.reset_cache()
+        admin_tok = auth.make_token("admin")
+        guest_tok = auth.make_token("guest")
+        ADH = {"X-App-Token": admin_tok}
+        GTH = {"X-App-Token": guest_tok}
+        check("多账号角色解析", settings.role_of("admin") == "admin"
+              and settings.role_of("guest") == "user")
+        check("admin 可进管理端", c.get("/api/admin/overview", headers=ADH).status_code == 200)
+        check("普通用户管理端 → 403",
+              c.get("/api/admin/overview", headers=GTH).status_code == 403)
+        check("普通用户不能写知识库",
+              c.post("/api/admin/knowledge/rules", headers=GTH,
+                     json={"text": "坏规则"}).status_code == 403)
+        login = c.post("/api/login", json={
+            "username": "guest", "password": "guest-pw"}).json()
+        check("登录返回用户名与角色",
+              login.get("username") == "guest" and login.get("role") == "user")
+        check("guest 问答端点可用",
+              c.get("/api/config", headers=GTH).json().get("role") == "user")
+
+        bad_sql = c.post("/api/admin/knowledge/sql", headers=ADH,
+                         json={"question": "删除订单", "sql": "DELETE FROM orders"})
+        check("知识库拒绝写 SQL", bad_sql.status_code == 400)
+        add_sql = c.post("/api/admin/knowledge/sql", headers=ADH, json={
+            "question": "近 12 个月每月销售额趋势",
+            "sql": "SELECT strftime('%Y-%m', order_date) AS m, SUM(pay_amount) FROM orders GROUP BY m",
+            "tables": ["orders"], "notes": "自测样例"})
+        check("管理端收录 SQL 样例", add_sql.status_code == 200
+              and add_sql.json().get("stats", {}).get("sql") == 1)
+        check("知识样例写入 markdown", any(kdir.joinpath("sql").glob("*.md")))
+        hit = knowledge.recall("近 12 个月每月销售额趋势", 2, {"orders"})
+        check("知识样例可被召回", bool(hit) and hit[0]["source"] == "knowledge")
+        add_rule = c.post("/api/admin/knowledge/rules", headers=ADH, json={
+            "title": "有效成交口径", "text": "统计有效成交时排除 cancelled / refunded 订单"})
+        check("管理端新增规则", add_rule.status_code == 200
+              and add_rule.json().get("stats", {}).get("rules") == 1)
+        check("规则进入 prompt", "cancelled" in knowledge.rules_block())
+        msgs = build_messages("销售额趋势", "【orders】", [], [], "")
+        check("规则注入 system prompt", "团队业务规则" in msgs[0]["content"])
+        kid = add_sql.json()["item"]["id"]
+        rid = add_rule.json()["item"]["id"]
+        check("删除知识样例", c.delete(f"/api/admin/knowledge/sql/{kid}", headers=ADH).status_code == 200)
+        check("删除规则", c.delete(f"/api/admin/knowledge/rules/{rid}", headers=ADH).status_code == 200)
+        check("重复删除 → 404", c.delete(f"/api/admin/knowledge/sql/{kid}", headers=ADH).status_code == 404)
+
+        st = Store()
+        st.ensure_session("selftest-kb", owner="admin")
+        st.add_message("selftest-kb", "user", "总订单数是多少")
+        mid = st.add_answer("selftest-kb", "已生成并执行 SQL",
+                            "SELECT COUNT(*) FROM orders", ["orders"], {},
+                            "总订单数是多少", None)
+        from_msg = c.post("/api/admin/knowledge/from-message", headers=ADH,
+                          json={"message_id": mid})
+        check("从会话回答收录知识", from_msg.status_code == 200
+              and from_msg.json().get("stats", {}).get("sql") == 1,
+              f"HTTP {from_msg.status_code} {from_msg.text[:160]}")
+        check("收录内容带来源", from_msg.json().get("item", {}).get("source", "").startswith("session:"))
+
+        object.__setattr__(settings, "AUTH_USERS", old_users)
+        object.__setattr__(settings, "KNOWLEDGE_DIR", old_kdir)
+        knowledge.reset_cache()
+        check("恢复旧账号后原 token 有效", auth.check_token(TOKEN))
         print()
 
         # ---------- 2. 表元数据 / 静态路径 ----------
