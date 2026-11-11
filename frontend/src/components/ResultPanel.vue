@@ -31,16 +31,16 @@
           <g v-for="(p, i) in points" :key="'b' + i">
             <rect :x="p.x" :y="Math.min(zeroY, p.y)" :width="barW"
                   :height="Math.max(1, Math.abs(zeroY - p.y))"
-                  :fill="p.value < 0 ? '#ef4444' : '#0e9384'" rx="2" />
+                  :fill="p.value < 0 ? '#ef4444' : '#2563eb'" rx="2" />
             <text v-if="i % labelStep === 0" :x="p.x + barW / 2" :y="H - 12"
                   text-anchor="middle" font-size="9" fill="#64748b">{{ p.label }}</text>
           </g>
         </template>
         <template v-else>
           <polyline :points="points.map(p => `${p.x + barW / 2},${p.y}`).join(' ')"
-                    fill="none" stroke="#0e9384" stroke-width="2.2" />
+                    fill="none" stroke="#2563eb" stroke-width="2.2" />
           <g v-for="(p, i) in points" :key="'l' + i">
-            <circle :cx="p.x + barW / 2" :cy="p.y" r="2.6" fill="#0e9384" />
+            <circle :cx="p.x + barW / 2" :cy="p.y" r="2.6" fill="#2563eb" />
             <text v-if="i % labelStep === 0" :x="p.x + barW / 2" :y="H - 12"
                   text-anchor="middle" font-size="9" fill="#64748b">{{ p.label }}</text>
           </g>

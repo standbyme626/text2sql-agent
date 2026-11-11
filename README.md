@@ -115,7 +115,7 @@ Text-to-SQL 的 demo 半天能写完，但它离「能给别人用」差一段�
 | **主备模型链路** — 默认 opencode-go DeepSeek V4.1 Flash；429/超时/空返回自动切 OpenRouter 免费模型，trace 标记实际 provider | `llm.py::_completion`、`providers_info` |
 | **文件知识库（Wren AI 风格）** — `knowledge/sql/*.md` 正式样例 + `knowledge/rules/*.md` 业务规则；markdown 是唯一真相，检索只是派生层 | `knowledge.py`、`knowledge/` |
 | **多账号 RBAC** — `AUTH_USERS` 配置 admin/user；普通用户只能问答，管理端 API 403 | `auth.py::require_admin`、`config.py` |
-| **管理后台** — 六个屏：运行总览 / 模型网关 / 知识库 / 语义指标 / 会话回放 / 权限与账号；分组侧栏 + KPI + 健康条 + 告警，视觉沿用双端原型 | `AdminPanel.vue`、`/api/admin/*` |
+| **管理后台** — 六个屏：运行总览 / 模型网关 / 知识库 / 语义指标 / 会话回放 / 权限与账号；分组侧栏 + KPI + 健康条 + 告警，信息架构参考双端原型 | `AdminPanel.vue`、`/api/admin/*` |
 | **拒答引导** — 规则前置拦截无关/越权/注入；模糊问题给可点击的正确问法 | `guard.py::check`、`parse_refusal` |
 | **会话还原** — 完整回答结构化落库（`payload`），切走再切回表格/图表/结论都在 | `store.py::add_answer`、`get_history` |
 | **鉴权** — 中文登录页 + HMAC token，签名绑定密码版本；登录失败按 IP 限流 | `auth.py::make_token`、`rate_ok` |
@@ -179,8 +179,8 @@ Text-to-SQL 的 demo 半天能写完，但它离「能给别人用」差一段�
 <p align="center"><sub>账号 + 密码登录，24 小时内免输；token 绑定账号表版本，改密/增删账号即失效</sub></p>
 
 **管理员登录后会出现「管理」入口**（普通用户看不到，管理端 API 直接返回 403）。
-管理端的视觉与交互沿用 `smart_hospital_agent` 的双端原型：顶栏端切换、分组侧栏、KPI 卡片、
-健康进度条、告警块与配置快照。
+管理端的**信息架构**参考 `smart_hospital_agent` 的双端原型：顶栏端切换、分组侧栏、KPI 卡片、
+健康进度条、告警块与配置快照（配色仍为本项目原有蓝色系）。
 
 <p align="center">
   <img src="docs/screenshots/admin-overview.png" width="900" alt="管理后台运行总览：组件健康、告警、Trace 与配置快照">

@@ -113,7 +113,7 @@
               <span class="adm-tiny adm-muted">{{ overview?.metrics?.traces ?? 0 }} 条</span>
             </div>
             <div v-for="t in overview?.recent_traces || []" :key="t.trace_id" class="adm-rec">
-              <span class="adm-dot-s" :style="t.status === 'ok' ? 'background:#0e9f6e' : 'background:#c77a15'"></span>
+              <span class="adm-dot-s" :style="t.status === 'ok' ? 'background:#0f9d58' : 'background:#d97706'"></span>
               <span>{{ t.trace_id }}</span>
               <span class="t">{{ ms(t.duration_ms) }}</span>
             </div>
@@ -402,7 +402,7 @@
         <div class="adm-card adm-pad">
           <div class="adm-h2">标准 JOIN</div>
           <div v-for="(j, i) in semantic?.joins || []" :key="i" class="adm-mono adm-tiny"
-               style="padding:6px 0;border-bottom:1px solid #eef3f1">{{ j.on }}</div>
+               style="padding:6px 0;border-bottom:1px solid #f1f5f9">{{ j.on }}</div>
           <div v-if="!(semantic?.joins || []).length" class="adm-hint">未配置</div>
         </div>
       </div>
@@ -444,7 +444,7 @@
               <div class="t">选择左侧会话</div>
               <div class="s">可以查看消息、SQL，并把验证过的回答收录进知识库</div>
             </div>
-            <div v-for="h in history" :key="h.id" style="padding:11px 0;border-bottom:1px solid #eef3f1">
+            <div v-for="h in history" :key="h.id" style="padding:11px 0;border-bottom:1px solid #f1f5f9">
               <div class="adm-between">
                 <span class="adm-badge" :class="h.role === 'user' ? 'sky' : 'teal'">
                   {{ h.role === 'user' ? '用户' : 'Agent' }}</span>
@@ -620,7 +620,7 @@ function time(ts) {
   return Number.isNaN(d.getTime()) ? 'n/a' : d.toLocaleString()
 }
 function bar(pctValue, ok) {
-  return { width: `${Math.max(4, Math.min(100, pctValue || 0))}%`, background: ok ? '#0e9f6e' : '#c77a15' }
+  return { width: `${Math.max(4, Math.min(100, pctValue || 0))}%`, background: ok ? '#0f9d58' : '#d97706' }
 }
 function csv(s) { return String(s || '').split(',').map(x => x.trim()).filter(Boolean) }
 
