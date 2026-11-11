@@ -1,0 +1,15 @@
+forbidden_keywords:
+- attach
+- detach
+- vacuum
+- reindex
+denied_columns:
+  customers:
+  - phone
+  - id_card
+  - email
+  orders: []
+  products: []
+mask_value: '***'
+max_rows: 500
+audit_sql: true

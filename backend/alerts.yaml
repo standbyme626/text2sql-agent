@@ -1,0 +1,56 @@
+- id: success_rate
+  name: 成功率过低
+  metric: success_rate
+  op: <
+  threshold: 0.9
+  level: rose
+  enabled: true
+  desc: 工具调用成功率低于 90%
+- id: p95_latency
+  name: P95 延迟超阈值
+  metric: latency_p95
+  op: '>'
+  threshold: 60000
+  level: amber
+  enabled: true
+  desc: 单轮问答 P95 超过 60s
+- id: tool_failures
+  name: 工具失败偏多
+  metric: tool_failures
+  op: '>'
+  threshold: 3
+  level: amber
+  enabled: true
+  desc: 最近窗口内工具失败次数偏多
+- id: knowledge_empty
+  name: 知识库未沉淀
+  metric: knowledge_empty
+  op: '>='
+  threshold: 1
+  level: info
+  enabled: true
+  desc: 还没有正式知识样例，few-shot 只靠自动积累
+- id: index_keyword
+  name: 向量索引未就绪
+  metric: index_keyword
+  op: '>='
+  threshold: 1
+  level: amber
+  enabled: true
+  desc: 当前按关键词选表，向量索引不可用
+- id: fallback_missing
+  name: 缺兜底模型
+  metric: fallback_missing
+  op: '>='
+  threshold: 1
+  level: amber
+  enabled: true
+  desc: 主模型故障时没有可切换的兜底模型
+- id: refusal_rate
+  name: 拒答率偏高
+  metric: refusal_rate
+  op: '>'
+  threshold: 0.3
+  level: info
+  enabled: true
+  desc: 超过三成提问被护栏拦下，可能是问法或知识覆盖问题

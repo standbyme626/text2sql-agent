@@ -400,6 +400,56 @@ class Store:
         finally:
             c.close()
 
+    # ---------- 未命中 / 失败聚合（管理端）----------
+    def unmatched(self, limit: int = 50) -> list[dict]:
+        """聚合"没答好"的问题：护栏拒答、0 行、错误、未完成。"""
+        c = self._conn()
+        try:
+            rows = c.execute(
+                "SELECT id,session_id,role,content,payload,created_at FROM messages "
+                "ORDER BY id DESC LIMIT ?", (max(200, limit * 40),)).fetchall()
+        finally:
+            c.close()
+        last_user: dict[str, str] = {}
+        out: list[dict] = []
+        for r in rows:
+            sid = r["session_id"]
+            if r["role"] == "user":
+                last_user[sid] = r["content"] or ""
+                continue
+            reason = ""
+            try:
+                p = json.loads(r["payload"] or "{}")
+            except (ValueError, TypeError):
+                p = {}
+            if not isinstance(p, dict):
+                p = {}
+            if p.get("guidance"):
+                reason = "refused"
+            else:
+                res = p.get("result") if isinstance(p.get("result"), dict) else None
+                if res is not None:
+                    if int(res.get("row_count") or 0) == 0:
+                        reason = "zero_rows"
+                    elif res.get("error"):
+                        reason = "sql_error"
+            if not reason and (r["content"] or "").startswith("（本次回答未完成"):
+                reason = "incomplete"
+            if not reason:
+                continue
+            out.append({
+                "message_id": r["id"],
+                "session_id": sid,
+                "question": last_user.get(sid, ""),
+                "reason": reason,
+                "created_at": r["created_at"],
+                "sql": p.get("result", {}).get("sql", "") if isinstance(
+                    p.get("result"), dict) else "",
+            })
+            if len(out) >= limit:
+                break
+        return out
+
     # ---------- 用户长期记忆 ----------
     def add_memory(self, owner: str, text: str) -> int:
         if not owner or not text:

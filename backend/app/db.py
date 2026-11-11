@@ -82,6 +82,11 @@ def clean_sql(raw: str) -> str:
     hit = DANGEROUS.search(masked)
     if hit:
         raise SqlRejected(f"检测到禁止的关键字：{hit.group(0)}")
+    # 合规策略里的额外禁写词（可在线编辑）
+    from . import policy
+    extra = policy.forbidden_hit(sql)
+    if extra:
+        raise SqlRejected(f"检测到禁止的关键字：{extra}")
     return sql
 
 
@@ -209,13 +214,24 @@ def execute_readonly(
 
     db_path 显式传入时强制走 SQLite（BIRD 评估等场景）；否则按 DATABASE_URL 分派。
     """
-    limit = max_rows or settings.MAX_RESULT_ROWS
+    from . import policy
+    pol = policy.policy()
+    limit = max_rows or min(settings.MAX_RESULT_ROWS, int(pol.get("max_rows") or 500))
     timeout = timeout_ms or settings.SQL_TIMEOUT_MS
     use_pg = db_path is None and settings.is_postgres
     with tracing.span("db.execute", dialect="postgres" if use_pg else "sqlite") as sp:
         try:
             res = (_execute_postgres(raw_sql, limit, timeout) if use_pg
                    else _execute_sqlite(raw_sql, limit, timeout, db_path))
+            # 敏感列脱敏（命中策略里登记的列名即打码）
+            denied: list[str] = []
+            for t in sql_table_names(raw_sql):
+                denied.extend(policy.denied_columns_for(t))
+            if denied:
+                res["rows"], masked_cols = policy.mask_by_keywords(
+                    res["columns"], res["rows"], denied)
+                if masked_cols:
+                    res["masked_columns"] = masked_cols
             sp.update(row_count=res["row_count"], truncated=res["truncated"], ok=True)
             return res
         except Exception as e:

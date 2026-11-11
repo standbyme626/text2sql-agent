@@ -98,6 +98,55 @@ export const api = {
   adminTraces: () => request('/api/admin/traces'),
   adminUsers: () => request('/api/admin/users'),
   semantic: () => request('/api/semantic'),
+  // ---- 监控 ----
+  adminAlerts: () => request('/api/admin/alerts'),
+  adminSaveAlerts: (rules) => request('/api/admin/alerts', {
+    method: 'PUT', body: JSON.stringify({ rules }),
+  }),
+  adminTrends: (days = 14) => request(`/api/admin/trends?days=${days}`),
+  adminUsage: () => request('/api/admin/usage'),
+  adminFailures: () => request('/api/admin/failures'),
+  adminUnmatched: (limit = 50) => request(`/api/admin/unmatched?limit=${limit}`),
+  adminPromoteUnmatched: (payload) => request('/api/admin/unmatched/promote', {
+    method: 'POST', body: JSON.stringify(payload),
+  }),
+  adminDebugTables: (question) =>
+    request(`/api/admin/debug/tables?question=${encodeURIComponent(question)}`),
+  adminRecall: (question, k = 3) =>
+    request(`/api/admin/knowledge/recall?question=${encodeURIComponent(question)}&k=${k}`),
+  // ---- 配置 ----
+  adminConfig: () => request('/api/admin/config'),
+  adminApplyConfig: (changes, note = '') => request('/api/admin/config', {
+    method: 'POST', body: JSON.stringify({ changes, note }),
+  }),
+  adminAccounts: () => request('/api/admin/accounts'),
+  adminSetAccounts: (users) => request('/api/admin/accounts', {
+    method: 'POST', body: JSON.stringify({ users }),
+  }),
+  adminPrompts: () => request('/api/admin/prompts'),
+  adminAddPrompt: (payload) => request('/api/admin/prompts', {
+    method: 'POST', body: JSON.stringify(payload),
+  }),
+  adminActivatePrompt: (id) => request(`/api/admin/prompts/${encodeURIComponent(id)}/activate`, {
+    method: 'POST',
+  }),
+  adminDeletePrompt: (id) => request(`/api/admin/prompts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  adminSemanticAdmin: () => request('/api/admin/semantic'),
+  adminSaveSemantic: (data) => request('/api/admin/semantic', {
+    method: 'PUT', body: JSON.stringify({ data }),
+  }),
+  adminPolicy: () => request('/api/admin/policy'),
+  adminSavePolicy: (policy) => request('/api/admin/policy', {
+    method: 'PUT', body: JSON.stringify({ policy }),
+  }),
+  adminAudit: (limit = 100) => request(`/api/admin/audit?limit=${limit}`),
+  // ---- 评测 ----
+  adminEvalRuns: (limit = 30) => request(`/api/admin/eval/runs?limit=${limit}`),
+  adminEvalRun: (label, mode = 'mock') => request('/api/admin/eval/run', {
+    method: 'POST', body: JSON.stringify({ label, mode }),
+  }),
+  adminEvalJob: (jobId) => request(`/api/admin/eval/job/${encodeURIComponent(jobId)}`),
+  adminEvalCompare: (a, b) => request(`/api/admin/eval/compare?a=${a}&b=${b}`),
 }
 
 /** SSE 流式提问；onEvent 逐条收到后端事件对象。

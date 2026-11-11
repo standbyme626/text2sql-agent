@@ -26,10 +26,16 @@ REAL_DATA = BACKEND / "data"
 TMP_DATA = Path(tempfile.mkdtemp(prefix="t2s-selftest-"))
 for name in ("ecommerce.db", "schema_meta.json"):
     shutil.copy(REAL_DATA / name, TMP_DATA / name)
+shutil.copy(BACKEND / "semantic" / "metrics.yaml", TMP_DATA / "metrics.yaml")
 
 os.environ.update({
     "MOCK_MODE": "true",
     "TEXT2SQL_NO_DOTENV": "1",     # 不读线上 .env，账号/密钥与生产隔离
+    # 所有"可写文件"都指到临时目录，自测绝不碰线上 alerts.yaml / policy.yaml / .env / metrics.yaml
+    "TEXT2SQL_ALERTS_FILE": str(TMP_DATA / "alerts.yaml"),
+    "TEXT2SQL_POLICY_FILE": str(TMP_DATA / "policy.yaml"),
+    "TEXT2SQL_ENV_FILE": str(TMP_DATA / "env.test"),
+    "SEMANTIC_FILE": str(TMP_DATA / "metrics.yaml"),
     "TEXT2SQL_DATA_DIR": str(TMP_DATA),
     "AUTH_USER": "admin",
     "AUTH_PASSWORD": "selftest-password",
@@ -178,6 +184,108 @@ def main():
               and from_msg.json().get("stats", {}).get("sql") == 1,
               f"HTTP {from_msg.status_code} {from_msg.text[:160]}")
         check("收录内容带来源", from_msg.json().get("item", {}).get("source", "").startswith("session:"))
+
+        # ---------- 1.2 管理端：配置 / 告警 / 提示词 / 语义 / 合规 / 评测 ----------
+        from app import alerts as alerts_mod, audit as audit_mod
+        from app import config_admin, evaluation, monitor
+        from app import policy as policy_mod
+        from app import prompts as prompts_mod
+        ov_resp = c.get("/api/admin/overview", headers=ADH)
+        ov = ov_resp.json()
+        check("总览含监控四件套",
+              all(k in ov for k in ("metrics", "alerts", "slo", "usage", "trends")),
+              f"HTTP {ov_resp.status_code} {ov_resp.text[:200]}")
+        check("总览含索引与审计计数", "index" in ov and ov.get("audit_count", 0) >= 0,
+              str(list(ov))[:160])
+        cfg = c.get("/api/admin/config", headers=ADH).json()
+        check("配置目录含分组与当前值",
+              bool(cfg.get("catalog", {}).get("groups")) and "MAX_AGENT_STEPS" in cfg.get("current", {}))
+        bad = c.post("/api/admin/config", headers=ADH,
+                     json={"changes": {"MAX_AGENT_STEPS": 999}})
+        check("配置越界被拒", bad.status_code == 400, bad.text[:80])
+        secret = c.post("/api/admin/config", headers=ADH,
+                        json={"changes": {"LLM_API_KEY": "leak"}})
+        check("密钥类配置不可在线改", secret.status_code == 400)
+        before_steps = settings.MAX_AGENT_STEPS
+        okcfg = c.post("/api/admin/config", headers=ADH,
+                       json={"changes": {"MAX_AGENT_STEPS": 7}, "note": "自测"})
+        check("配置写入成功且热生效",
+              okcfg.status_code == 200 and settings.MAX_AGENT_STEPS == 7,
+              okcfg.text[:120])
+        check("配置变更已落审计",
+              any(a["action"] == "config.update" for a in audit_mod.recent(20)))
+        object.__setattr__(settings, "MAX_AGENT_STEPS", before_steps)
+
+        fired = c.get("/api/admin/alerts", headers=ADH).json()
+        check("告警规则可读且含评估结果",
+              "rules" in fired and "fired" in fired)
+        saved = c.put("/api/admin/alerts", headers=ADH, json={"rules": [
+            {"id": "t1", "name": "自测规则", "metric": "latency_p95", "op": ">",
+             "threshold": 1, "level": "amber", "enabled": True}]})
+        check("告警规则可写", saved.status_code == 200 and saved.json()["rules"][0]["id"] == "t1")
+        bad_rule = c.put("/api/admin/alerts", headers=ADH, json={"rules": [
+            {"id": "x", "metric": "not_exist", "op": ">", "threshold": 1}]})
+        check("非法告警指标被拒", bad_rule.status_code == 400)
+
+        pr = c.post("/api/admin/prompts", headers=ADH, json={
+            "kind": "system_append", "name": "自测提示词", "body": "【自测】额外规则。",
+            "activate": True})
+        check("提示词版本可创建并激活",
+              pr.status_code == 200 and any(v["active"] for v in pr.json()["prompts"]))
+        pid = pr.json()["item"]["id"]
+        check("提示词生效内容可读", "【自测】" in prompts_mod.overlay("system_append"))
+        check("提示词可删除", c.delete(f"/api/admin/prompts/{pid}", headers=ADH).status_code == 200)
+
+        sem = c.get("/api/admin/semantic", headers=ADH).json()
+        check("语义层目录可读", len(sem.get("metrics") or []) >= 8)
+        sem2 = c.put("/api/admin/semantic", headers=ADH, json={"data": {
+            "version": sem.get("version", 1),
+            "business_rules": sem.get("business_rules") or [],
+            "metrics": sem.get("metrics") or [],
+            "joins": sem.get("joins") or [],
+            "dialects": sem.get("dialects") or {}}})
+        check("语义层可写回", sem2.status_code == 200)
+        plan = c.get("/api/admin/debug/tables?question=各品类销售额排名", headers=ADH).json()
+        check("检索调试返回打分明细",
+              bool(plan.get("tables")) and "plan" in plan)
+        check("MDL 编译命中指标",
+              (plan.get("plan") or {}).get("matched") is True, str(plan.get("plan"))[:80])
+
+        pol = c.get("/api/admin/policy", headers=ADH).json()
+        check("合规策略可读", "denied_columns" in pol)
+        pol2 = c.put("/api/admin/policy", headers=ADH, json={"policy": {
+            "forbidden_keywords": ["vacuum"], "denied_columns": {"customers": ["phone"]},
+            "mask_value": "***", "max_rows": 500, "audit_sql": True}})
+        check("合规策略可写", pol2.status_code == 200)
+        masked = c.post("/api/sql", headers=ADH,
+                        json={"sql": "SELECT customer_id, phone FROM customers LIMIT 1"})
+        rows = masked.json().get("rows") or []
+        check("敏感列自动脱敏",
+              bool(rows) and all(r[1] == "***" for r in rows), str(rows[:1]))
+        bad_kw = c.post("/api/sql", headers=ADH, json={"sql": "SELECT 1 FROM orders WHERE 1=1"})
+        check("策略写入不影响正常 SQL", bad_kw.status_code == 200)
+        c.put("/api/admin/policy", headers=ADH, json={"policy": pol})
+
+        unm = c.get("/api/admin/unmatched", headers=ADH).json()
+        check("未命中问题可聚合", "items" in unm)
+        check("用量与失败分布可聚合",
+              "providers" in monitor.usage() and "status" in monitor.failures())
+        check("趋势按天聚合", isinstance(monitor.trends()["days"], list))
+        ev = c.post("/api/admin/eval/run", headers=ADH, json={"label": "自测评测", "mode": "mock"})
+        check("评测任务可启动", ev.status_code == 200 and ev.json()["job"]["state"] == "running")
+        import time as _t
+        for _ in range(60):
+            _t.sleep(1)
+            job = c.get(f"/api/admin/eval/job/{ev.json()['job']['job_id']}", headers=ADH).json()
+            if job.get("state") != "running":
+                break
+        check("评测跑完并落库",
+              job.get("state") == "done" and job.get("result", {}).get("total", 0) > 0,
+              str(job.get("state")) + str(job.get("error", ""))[:80])
+        runs = c.get("/api/admin/eval/runs", headers=ADH).json()["runs"]
+        check("评测历史可查", len(runs) >= 1)
+        aud = c.get("/api/admin/audit", headers=ADH).json()
+        check("审计日志可查", aud.get("count", 0) >= 1)
 
         object.__setattr__(settings, "AUTH_USERS", old_users)
         object.__setattr__(settings, "KNOWLEDGE_DIR", old_kdir)

@@ -12,14 +12,15 @@ from dotenv import load_dotenv
 APP_DIR = Path(__file__).resolve().parent          # backend/app
 BACKEND_DIR = APP_DIR.parent                       # backend
 PROJECT_DIR = BACKEND_DIR.parent                   # text2sql-agent
-DATA_DIR = Path(os.getenv("TEXT2SQL_DATA_DIR", str(BACKEND_DIR / "data")))
-STATIC_DIR = Path(os.getenv("TEXT2SQL_STATIC_DIR", str(BACKEND_DIR / "static")))
-
 # 自测/隔离实例用 TEXT2SQL_NO_DOTENV=1 切断线上 .env，避免密钥与账号串味
 if os.getenv("TEXT2SQL_NO_DOTENV", "").strip().lower() in ("1", "true", "yes", "on"):
     pass
 else:
     load_dotenv(PROJECT_DIR / ".env", override=False)
+
+# 注意：必须在 load_dotenv 之后计算，否则 .env 里的路径类配置不生效
+DATA_DIR = Path(os.getenv("TEXT2SQL_DATA_DIR", str(BACKEND_DIR / "data")))
+STATIC_DIR = Path(os.getenv("TEXT2SQL_STATIC_DIR", str(BACKEND_DIR / "static")))
 
 
 def _bool(key: str, default: bool = False) -> bool:
@@ -146,6 +147,7 @@ class Settings:
     # --- 限流 / 资源 ---
     RATE_LIMIT_ENABLED: bool = _bool("RATE_LIMIT_ENABLED", True)
     RATE_LIMIT_PER_MIN: int = _clamped("RATE_LIMIT_PER_MIN", 40, 1, 1000)
+    LOGIN_FAIL_LIMIT: int = _clamped("LOGIN_FAIL_LIMIT", 8, 3, 50)
     REBUILD_COOLDOWN: int = _clamped("REBUILD_COOLDOWN", 300, 0, 86400)
     MAX_QA_HISTORY: int = _clamped("MAX_QA_HISTORY", 400, 50, 10000)
     MAX_BODY_BYTES: int = _clamped("MAX_BODY_BYTES", 1_000_000, 10000, 10_000_000)

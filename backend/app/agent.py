@@ -20,7 +20,7 @@ import re
 from typing import AsyncGenerator
 from uuid import uuid4
 
-from . import db, guard, knowledge, llm, semantic, tools, tracing
+from . import db, guard, knowledge, llm, prompts, semantic, tools, tracing
 from .config import settings
 from .embedding import embed_one
 from .schema_index import SchemaIndex
@@ -221,7 +221,10 @@ def build_messages(question: str, ctx: str, history: list[dict],
     """标准 role 交替 messages；tool 模式与 workflow 模式共用历史/上下文构造。"""
     system = (TOOL_SYSTEM_PROMPT if mode == "toolloop" else BASE_SYSTEM_PROMPT)
     system += "\n" + semantic.prompt_block(question)
+    system += semantic.compile_prompt(question)      # MDL 编译层：命中的指标给确定表达式
     system += knowledge.rules_block()
+    system += prompts.overlay("system_append")        # 提示词版本管理
+    system += prompts.overlay("guard")
     if memory:
         system += ("\n【用户长期偏好（最高优先级，覆盖默认业务口径）】\n"
                    + "\n".join(f"- {m}" for m in memory))
@@ -369,7 +372,7 @@ async def build_insight(question: str, sql: str, columns: list[str], rows: list[
     preview = json.dumps(
         [dict(zip(columns, r)) for r in rows[:n_preview]], ensure_ascii=False, default=str
     )
-    system = INSIGHT_SYSTEM
+    system = prompts.overlay("insight") or INSIGHT_SYSTEM
     if zero_rows:
         system += ZERO_ROWS_RULE
     if truncated:
@@ -1029,6 +1032,17 @@ async def run_agent(question: str, session_id: str | None = None,
         state["names"] = [t["name"] for t in tables]
         yield {"type": "tables", "tables": tables, "mode": index.mode,
                "boost": boost}
+
+        plan = semantic.compile_question(question)
+        state["plan"] = plan
+        yield {"type": "plan", "plan": {
+            "matched": plan.get("matched"),
+            "metric": plan.get("name") or "",
+            "metric_id": plan.get("id") or "",
+            "tables": plan.get("tables") or [],
+            "sql_snippet": plan.get("sql_snippet") or "",
+            "reason": plan.get("reason") or "",
+        }}
 
         memory = (store.relevant_memory(question, owner)
                   if settings.MEMORY_ENABLED else [])

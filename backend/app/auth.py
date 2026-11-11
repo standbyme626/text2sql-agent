@@ -94,7 +94,7 @@ def is_revoked(token: str) -> bool:
 # ---------- 登录失败限流（统一给所有凭据校验入口使用） ----------
 _LOGIN_FAILS: dict[str, tuple[int, float]] = {}
 _LOGIN_LOCK = threading.Lock()
-_LOGIN_MAX_FAILS = 8
+_LOGIN_MAX_FAILS = settings.LOGIN_FAIL_LIMIT
 _LOGIN_WINDOW = 60.0
 _LOGIN_MAX_IPS = 2048
 
@@ -112,7 +112,7 @@ def login_blocked(ip: str) -> bool:
     with _LOGIN_LOCK:
         _gc(now)
         rec = _LOGIN_FAILS.get(ip)
-        return bool(rec and rec[0] >= _LOGIN_MAX_FAILS)
+        return bool(rec and rec[0] >= settings.LOGIN_FAIL_LIMIT)
 
 
 def note_login_failure(ip: str) -> None:

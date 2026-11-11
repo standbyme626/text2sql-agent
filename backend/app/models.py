@@ -51,3 +51,38 @@ class KnowledgeRuleReq(BaseModel):
 class FromMessageReq(BaseModel):
     message_id: int = Field(..., gt=0)
     notes: str = Field(default="", max_length=2000)
+
+
+class ConfigUpdateReq(BaseModel):
+    changes: dict[str, Any] = Field(default_factory=dict)
+    note: str = Field(default="", max_length=300)
+
+
+class AccountsReq(BaseModel):
+    users: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    note: str = Field(default="", max_length=300)
+
+
+class AlertsReq(BaseModel):
+    rules: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+
+
+class PolicyReq(BaseModel):
+    policy: dict[str, Any] = Field(default_factory=dict)
+
+
+class SemanticReq(BaseModel):
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class PromptReq(BaseModel):
+    kind: str = Field(..., max_length=40)
+    name: str = Field(default="", max_length=120)
+    body: str = Field(..., min_length=5, max_length=8000)
+    activate: bool = True
+
+
+class EvalRunReq(BaseModel):
+    label: str = Field(default="", max_length=120)
+    mode: str = Field(default="mock", max_length=20)
+    note: str = Field(default="", max_length=300)

@@ -14,12 +14,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import agent, auth, db, knowledge, llm, semantic, tools, tracing
+from . import (agent, alerts, audit, auth, config_admin, db, evaluation, knowledge,
+               llm, monitor, policy, prompts, semantic, tools, tracing)
 from .auth import make_token, require_admin, require_auth, verify_login
 from .config import STATIC_DIR, settings
 from .embedding import last_error
-from .models import (ExplainReq, FromMessageReq, KnowledgeRuleReq,
-                     KnowledgeSqlReq, LoginReq, MemoryReq, QueryReq, SqlReq)
+from .models import (AccountsReq, AlertsReq, ConfigUpdateReq, EvalRunReq, ExplainReq,
+                     FromMessageReq, KnowledgeRuleReq, KnowledgeSqlReq, LoginReq,
+                     MemoryReq, PolicyReq, PromptReq, QueryReq, SemanticReq, SqlReq)
 from .schema_index import SchemaIndex
 from .store import Store
 
@@ -66,7 +68,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Text-to-SQL Agent", version="3.1.0", lifespan=lifespan)
+app = FastAPI(title="Text-to-SQL Agent", version="3.2.0", lifespan=lifespan)
 
 _origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
 app.add_middleware(
@@ -383,23 +385,6 @@ async def rebuild_index(_: str = Depends(_rate_limited)):
 
 
 # ---------------- 管理后台 ----------------
-@app.get("/api/admin/overview")
-def admin_overview(user: str = Depends(require_admin)):
-    st = _need_store()
-    m = tracing.metrics()
-    return {
-        "version": app.version,
-        "status": _status_payload(user),
-        "metrics": m,
-        "knowledge": knowledge.stats(),
-        "sessions": st.count_sessions(),
-        "recent_traces": (m.get("recent") or [])[:10],
-        "users": [{"username": u, "role": v["role"]}
-                  for u, v in settings.auth_users.items()],
-        "llm_chain": llm.providers_info(),
-    }
-
-
 @app.get("/api/admin/knowledge")
 def admin_knowledge(_: str = Depends(require_admin)):
     return {"sql": knowledge.examples(), "rules": knowledge.rules(),
@@ -492,6 +477,244 @@ def admin_traces(_: str = Depends(require_admin)):
 def admin_users(_: str = Depends(require_admin)):
     return {"users": [{"username": u, "role": v["role"]}
                       for u, v in settings.auth_users.items()]}
+
+
+# ---------------- 管理端：监控 ----------------
+def _alert_ctx() -> dict:
+    m = tracing.metrics()
+    return {"metrics": m, "status": _status_payload(), "knowledge": knowledge.stats()}
+
+
+@app.get("/api/admin/overview")
+def admin_overview(user: str = Depends(require_admin)):
+    ctx = _alert_ctx()
+    st = _need_store()
+    return {
+        "version": app.version,
+        "status": ctx["status"],
+        "metrics": ctx["metrics"],
+        "alerts": alerts.evaluate(ctx),
+        "slo": alerts.slo(ctx),
+        "usage": monitor.usage(),
+        "failures": monitor.failures(),
+        "trends": monitor.trends(),
+        "index": monitor.index_stats(),
+        "knowledge": ctx["knowledge"],
+        "sessions": st.count_sessions(),
+        "recent_traces": (ctx["metrics"].get("recent") or [])[:10],
+        "users": [{"username": u, "role": v["role"]}
+                  for u, v in settings.auth_users.items()],
+        "llm_chain": llm.providers_info(),
+        "audit_count": audit.count(),
+    }
+
+
+@app.get("/api/admin/alerts")
+def admin_alerts(_: str = Depends(require_admin)):
+    ctx = _alert_ctx()
+    return {"rules": alerts.rules(), "fired": alerts.evaluate(ctx), "slo": alerts.slo(ctx)}
+
+
+@app.put("/api/admin/alerts")
+def admin_put_alerts(req: AlertsReq, user: str = Depends(require_admin)):
+    try:
+        rules = alerts.save_rules(req.rules, actor=user)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    ctx = _alert_ctx()
+    return {"ok": True, "rules": rules, "fired": alerts.evaluate(ctx)}
+
+
+@app.get("/api/admin/trends")
+def admin_trends(days: int = 14, _: str = Depends(require_admin)):
+    return monitor.trends(days)
+
+
+@app.get("/api/admin/usage")
+def admin_usage(_: str = Depends(require_admin)):
+    return monitor.usage()
+
+
+@app.get("/api/admin/failures")
+def admin_failures(_: str = Depends(require_admin)):
+    return monitor.failures()
+
+
+@app.get("/api/admin/unmatched")
+def admin_unmatched(limit: int = 50, _: str = Depends(require_admin)):
+    """未命中/失败问题清单：护栏拒答、0 行、SQL 报错、未完成。"""
+    items = _need_store().unmatched(limit)
+    for it in items:
+        it["knowledge"] = knowledge.recall(it.get("question", ""), 2)
+    return {"items": items}
+
+
+@app.post("/api/admin/unmatched/promote")
+def admin_promote_unmatched(req: KnowledgeSqlReq, user: str = Depends(require_admin)):
+    """把未命中问题收录为正式样例（SQL 必填，走只读闸门校验）。"""
+    try:
+        sql = db.clean_sql(req.sql)
+    except db.SqlRejected as e:
+        raise HTTPException(400, str(e)) from e
+    try:
+        item = knowledge.add_example(req.question, sql, tables=req.tables,
+                                     notes=req.notes, source=f"unmatched:{user}")
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"ok": True, "item": item, "stats": knowledge.stats()}
+
+
+@app.get("/api/admin/debug/tables")
+async def admin_debug_tables(question: str, _: str = Depends(require_admin)):
+    """检索调试：单条问句的选表打分明细（向量分/关键词分/列级分/外键闭包）。"""
+    if not question.strip():
+        raise HTTPException(400, "question 不能为空")
+    idx = _need_index()
+    qvec = None
+    if idx.mode == "vector":
+        from .embedding import embed_one
+        qvec = await embed_one(question)
+    tables = await idx.search(question, qvec=qvec)
+    plan = semantic.compile_question(question)
+    return {
+        "question": question,
+        "index_mode": idx.mode,
+        "tables": tables,
+        "matched_columns": {t["name"]: t.get("matched_columns") or [] for t in tables},
+        "plan": plan,
+        "knowledge_recall": knowledge.recall(question, 3),
+    }
+
+
+@app.get("/api/admin/knowledge/recall")
+def admin_recall(question: str, k: int = 3, _: str = Depends(require_admin)):
+    """知识召回调试：看词法召回命中了什么。"""
+    return {"question": question, "items": knowledge.recall(question, k),
+            "rules": knowledge.rules()}
+
+
+# ---------------- 管理端：配置 ----------------
+@app.get("/api/admin/config")
+def admin_config(_: str = Depends(require_admin)):
+    return {"catalog": config_admin.catalog(), "current": config_admin.current(),
+            "env_path": str(config_admin.env_path())}
+
+
+@app.post("/api/admin/config")
+def admin_apply_config(req: ConfigUpdateReq, user: str = Depends(require_admin)):
+    try:
+        res = config_admin.apply(user, req.changes, note=req.note)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"ok": True, **res, "current": config_admin.current()}
+
+
+@app.get("/api/admin/accounts")
+def admin_accounts(_: str = Depends(require_admin)):
+    return {"users": config_admin.accounts()}
+
+
+@app.post("/api/admin/accounts")
+def admin_set_accounts(req: AccountsReq, user: str = Depends(require_admin)):
+    try:
+        res = config_admin.set_accounts(user, req.users, note=req.note)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"ok": True, **res}
+
+
+@app.get("/api/admin/prompts")
+def admin_prompts(_: str = Depends(require_admin)):
+    prompts.seed_defaults()
+    return {"prompts": prompts.versions(), "kinds": list(prompts.KINDS)}
+
+
+@app.post("/api/admin/prompts")
+def admin_add_prompt(req: PromptReq, user: str = Depends(require_admin)):
+    try:
+        item = prompts.add(req.kind, req.name, req.body, activate=req.activate, actor=user)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"ok": True, "item": item, "prompts": prompts.versions()}
+
+
+@app.post("/api/admin/prompts/{pid}/activate")
+def admin_activate_prompt(pid: str, user: str = Depends(require_admin)):
+    try:
+        item = prompts.set_active(kind="", kid=pid, actor=user)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    return {"ok": True, "item": item, "prompts": prompts.versions()}
+
+
+@app.delete("/api/admin/prompts/{pid}")
+def admin_delete_prompt(pid: str, user: str = Depends(require_admin)):
+    if not prompts.delete(pid, actor=user):
+        raise HTTPException(404, "提示词版本不存在")
+    return {"ok": True, "prompts": prompts.versions()}
+
+
+@app.get("/api/admin/semantic")
+def admin_semantic(_: str = Depends(require_admin)):
+    return semantic.catalog()
+
+
+@app.put("/api/admin/semantic")
+def admin_put_semantic(req: SemanticReq, user: str = Depends(require_admin)):
+    try:
+        cat = semantic.save(req.data, actor=user)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"语义层写入失败：{e}") from e
+    return {"ok": True, "catalog": cat}
+
+
+@app.get("/api/admin/policy")
+def admin_policy(_: str = Depends(require_admin)):
+    return policy.policy()
+
+
+@app.put("/api/admin/policy")
+def admin_put_policy(req: PolicyReq, user: str = Depends(require_admin)):
+    try:
+        return {"ok": True, "policy": policy.save_policy(req.policy, actor=user)}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"策略写入失败：{e}") from e
+
+
+@app.get("/api/admin/audit")
+def admin_audit(limit: int = 100, actor: str = "", _: str = Depends(require_admin)):
+    return {"items": audit.recent(limit, actor=actor), "count": audit.count()}
+
+
+# ---------------- 管理端：质量评测 ----------------
+@app.get("/api/admin/eval/runs")
+def admin_eval_runs(limit: int = 30, _: str = Depends(require_admin)):
+    return {"runs": evaluation.runs(limit), "jobs": evaluation.jobs()}
+
+
+@app.post("/api/admin/eval/run")
+def admin_eval_run(req: EvalRunReq, user: str = Depends(require_admin)):
+    try:
+        job = evaluation.start(req.label, req.mode, req.note)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"ok": True, "job": job}
+
+
+@app.get("/api/admin/eval/job/{job_id}")
+def admin_eval_job(job_id: str, _: str = Depends(require_admin)):
+    job = evaluation.job(job_id)
+    if not job:
+        raise HTTPException(404, "任务不存在")
+    return job
+
+
+@app.get("/api/admin/eval/compare")
+def admin_eval_compare(a: int, b: int, _: str = Depends(require_admin)):
+    try:
+        return evaluation.compare(a, b)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
 
 
 # ---------------- 静态前端 ----------------

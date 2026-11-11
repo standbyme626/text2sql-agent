@@ -23,12 +23,12 @@
 
 </div>
 
-> **项目状态：v3.1 / 2026 Agent 架构 / 单实例演示。**
+> **项目状态：v3.2 / 2026 Agent 架构 / 单实例演示。**
 > 支持管理员 + 普通用户两种角色；管理员可在「管理后台」维护知识库、语义指标、会话轨迹与运行状态，
 > 也可用 `?view=admin` 深链直达管理端。
 > 仓库不含数据库文件、向量索引与任何密钥，首次运行按第 8 节初始化，约 1 分钟建好 50 张表。
 
-**50 张表** · **51,899 行** · **tool-calling Agent** · **5 个工具 + MCP** · **150 项自测** · **单轮 ≤ 6 次 LLM 调用** · **主备模型链路**
+**50 张表** · **51,899 行** · **tool-calling Agent** · **6 个工具 + MCP** · **178 项自测 + 30 项端到端** · **单轮 ≤ 6 次 LLM 调用** · **主备模型链路** · **14 屏管理后台**
 
 ---
 
@@ -179,42 +179,82 @@ Text-to-SQL 的 demo 半天能写完，但它离「能给别人用」差一段�
 <p align="center"><sub>账号 + 密码登录，24 小时内免输；token 绑定账号表版本，改密/增删账号即失效</sub></p>
 
 **管理员登录后会出现「管理」入口**（普通用户看不到，管理端 API 直接返回 403）。
-管理端的**信息架构**参考 `smart_hospital_agent` 的双端原型：顶栏端切换、分组侧栏、KPI 卡片、
-健康进度条、告警块与配置快照（配色仍为本项目原有蓝色系）。
+信息架构参考 `smart_hospital_agent` 的双端原型：分组侧栏、KPI 卡片、健康进度条、告警块、配置快照。
 
 <p align="center">
-  <img src="docs/screenshots/admin-overview.png" width="900" alt="管理后台运行总览：组件健康、告警、Trace 与配置快照">
+  <img src="docs/screenshots/admin-overview.png" width="900" alt="管理后台运行总览：趋势、告警 SLO、用量成本、失败分布与索引状态">
 </p>
 
-<p align="center"><sub>运行总览：会话/成功率/P50/P95、组件健康条、待办告警、最近 Trace、账号角色</sub></p>
+<p align="center"><sub>运行总览：14 天趋势、告警与 SLO、模型用量与成本、失败分布、索引与知识状态</sub></p>
 
 <table align="center">
   <tr>
-    <td align="center"><img src="docs/screenshots/admin-model.png" width="430" alt="模型网关：主备模型链路与 Agent 参数"></td>
-    <td align="center"><img src="docs/screenshots/admin-access.png" width="430" alt="权限与账号：角色列表与权限矩阵"></td>
+    <td align="center"><img src="docs/screenshots/admin-alerts.png" width="430" alt="告警与 SLO：规则表与命中"></td>
+    <td align="center"><img src="docs/screenshots/admin-eval.png" width="430" alt="质量评测：跑分、失败分类与 A/B 对比"></td>
   </tr>
   <tr>
-    <td align="center"><sub>模型网关：主备链路、Agent 参数、索引状态</sub></td>
-    <td align="center"><sub>权限与账号：admin/user 能力矩阵、登录安全策略</sub></td>
+    <td align="center"><sub>告警与 SLO：规则可改、阈值可调</sub></td>
+    <td align="center"><sub>质量评测：golden 一键跑分 + A/B 对比</sub></td>
   </tr>
 </table>
 
 <table align="center">
   <tr>
-    <td align="center"><img src="docs/screenshots/admin-knowledge.png" width="430" alt="知识库：收录 NL→SQL 样例与业务规则"></td>
-    <td align="center"><img src="docs/screenshots/admin-sessions.png" width="430" alt="会话回放：全部 owner 会话与回答收录"></td>
+    <td align="center"><img src="docs/screenshots/admin-config.png" width="430" alt="运行配置：白名单化在线改 .env"></td>
+    <td align="center"><img src="docs/screenshots/admin-audit.png" width="430" alt="配置审计：写操作留痕"></td>
   </tr>
   <tr>
-    <td align="center"><sub>知识库：样例与规则写入 knowledge/*.md，可提交可回滚</sub></td>
-    <td align="center"><sub>会话回放：跨 owner 查看回答，一键收录进知识库</sub></td>
+    <td align="center"><sub>运行配置：分组表单，写完即生效</sub></td>
+    <td align="center"><sub>配置审计：谁、何时、把什么改成了什么</sub></td>
+  </tr>
+</table>
+
+<table align="center">
+  <tr>
+    <td align="center"><img src="docs/screenshots/admin-debug.png" width="430" alt="检索调试：选表打分明细与指标编译计划"></td>
+    <td align="center"><img src="docs/screenshots/admin-unmatched.png" width="430" alt="未命中问题：拒答与 0 行聚合"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>检索调试：每张表的向量分/关键词分/列级命中</sub></td>
+    <td align="center"><sub>未命中问题：拒答、0 行、报错聚合，可一键收录</sub></td>
+  </tr>
+</table>
+
+<table align="center">
+  <tr>
+    <td align="center"><img src="docs/screenshots/admin-prompts.png" width="430" alt="提示词管理：版本化与激活"></td>
+    <td align="center"><img src="docs/screenshots/admin-policy.png" width="430" alt="只读策略：禁写词与敏感列脱敏"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>提示词管理：三类提示词可版本化回滚</sub></td>
+    <td align="center"><sub>只读策略：禁写词、敏感列打码、行数上限</sub></td>
   </tr>
 </table>
 
 <p align="center">
-  <img src="docs/screenshots/admin-semantic.png" width="900" alt="语义指标：业务口径规则、受治理指标与标准 JOIN">
+  <img src="docs/screenshots/admin-sessions.png" width="900" alt="会话回放：全部 owner 会话与 trace 下钻">
 </p>
 
-<p align="center"><sub>语义指标：口径规则 + 8 个受治理指标 + 标准 JOIN</sub></p>
+<p align="center"><sub>会话回放：跨 owner 查看回答，可下钻到 trace span，也可一键收录进知识库</sub></p>
+
+### 管理端能做什么
+
+| 分类 | 屏 | 能力 |
+|---|---|---|
+| 监控 | 运行总览 | 14 天趋势、成功率/P50/P95、模型用量与成本、失败分布、索引与知识状态 |
+| 监控 | 告警与 SLO | 规则化告警（成功率/P95/工具失败/索引/兜底/拒答率）、可用性、错误预算 |
+| 监控 | 未命中问题 | 聚合护栏拒答、0 行、SQL 报错、未完成；可一键收录为正式样例 |
+| 监控 | 检索调试 | 单问句的选表打分明细、指标编译计划、知识召回命中 |
+| 监控 | 质量评测 | golden 一键跑分、失败分类、历史对比、A/B 差值 |
+| 监控 | 会话回放 | 全部 owner 会话、消息与 SQL、trace span 下钻、一键收录 |
+| 配置 | 运行配置 | 白名单化在线改 `.env`：模型链路、Agent 参数、结果护栏、限流观测 |
+| 配置 | 提示词管理 | `system_append` / `insight` / `guard` 三类提示词版本化、激活、回滚 |
+| 配置 | 语义指标 | 指标与标准 JOIN 在线编辑，写回 `semantic/metrics.yaml`，编译层随即可用 |
+| 配置 | 知识库 | 正式样例与业务规则（`knowledge/*.md`），可提交可回滚 |
+| 配置 | 只读策略 | 禁写词、敏感列自动打码、结果行数上限 |
+| 配置 | 账号与权限 | admin/user 两级角色矩阵、账号增删改（改完旧 token 立即失效） |
+| 治理 | 配置审计 | 所有写操作 append-only 留痕 |
+| 治理 | 索引与语料 | 索引模式/向量数/重建时间、召回策略参数 |
 
 ---
 
@@ -372,6 +412,15 @@ metrics:
 - 管理员可在「管理后台 → 会话轨迹」把一条验证过的回答一键收录，也可在「知识库」手写；
 - 每轮把 `knowledge/rules` 注入 system prompt，把正式样例与自动 few-shot 合并召回（正式样例优先）；
 - 文件可进 Git，code review、diff、回滚都能用；删除后缓存自动失效，无需重启。
+
+**语义层编译**（Wren AI 的 MDL 思路）：问题命中受治理指标时，系统把指标编译成
+「表达式 + 有效过滤 + 涉及表」并注入 prompt，同时下发 `plan` 事件；模型还可调用
+`get_metric_sql` 取编译结果——口径不再只靠 prompt 里的自由文本。
+
+**提示词版本化**：`knowledge/prompts/*.md` 三类提示词（system_append / insight / guard）
+可版本化、激活、回滚，每次切换写审计。
+
+**配置审计**：所有写操作 append-only 留痕（谁、何时、把什么改成了什么、是否已生效）。
 
 ### 5.7 可调参数
 
@@ -590,6 +639,27 @@ curl -s http://127.0.0.1:3388/api/status -H "X-App-Token: <token>"
 
 > `/api/admin/*` 需要 `role=admin`；普通用户返回 `403`。
 
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/api/admin/overview` | 总览：状态、指标、告警、SLO、用量、趋势、失败分布、索引 |
+| `GET/PUT` | `/api/admin/alerts` | 告警规则读取 / 写入（`backend/alerts.yaml`） |
+| `GET` | `/api/admin/trends` | 按天聚合的调用量、成功率、延迟、token |
+| `GET` | `/api/admin/usage` | 按 provider 的调用次数、token 与估算成本 |
+| `GET` | `/api/admin/failures` | trace 状态分布与工具失败原因 |
+| `GET` | `/api/admin/unmatched` | 未命中/失败问题清单 |
+| `POST` | `/api/admin/unmatched/promote` | 把未命中问题收录为正式样例 |
+| `GET` | `/api/admin/debug/tables` | 检索调试：选表打分明细 + 指标编译计划 |
+| `GET` | `/api/admin/knowledge/recall` | 知识召回调试 |
+| `GET/POST` | `/api/admin/config` | 运行配置目录 / 在线修改（热生效 + 审计） |
+| `GET/POST` | `/api/admin/accounts` | 账号列表 / 覆盖更新（写 `AUTH_USERS`） |
+| `GET/POST/DELETE` | `/api/admin/prompts` | 提示词版本：列出 / 新建 / 激活 / 删除 |
+| `GET/PUT` | `/api/admin/semantic` | 语义层目录 / 在线写回 |
+| `GET/PUT` | `/api/admin/policy` | 只读合规策略读取 / 写入 |
+| `GET` | `/api/admin/audit` | 配置审计流水 |
+| `GET/POST` | `/api/admin/eval/runs`、`/api/admin/eval/run` | 评测历史 / 启动评测任务 |
+| `GET` | `/api/admin/eval/job/{id}` | 评测任务状态与结果 |
+| `GET` | `/api/admin/eval/compare?a=&b=` | 两次评测的 A/B 对比 |
+
 ### 9.2 提问示例
 
 ```bash
@@ -704,7 +774,12 @@ DOMAIN=sql.example.com sudo -E bash /tmp/text2sql-deploy/setup-edge.sh
 MOCK_MODE=true .venv/bin/python backend/scripts/selftest.py
 ```
 
-**150 项断言**，跑在独立临时数据目录上，不碰开发库、不消耗外部额度，结束自动清理。
+**178 项断言**，跑在独立临时数据目录上，不碰开发库、不消耗外部额度，结束自动清理；
+告警规则、合规策略、`.env`、语义层、提示词全部指向临时副本，自测不会写脏线上文件。
+
+此外有 **30 项端到端**（浏览器真实点击，隔离实例）：14 个管理屏逐屏渲染、在线改配置并热生效、
+告警规则保存、提示词版本生效、合规策略生效、敏感列在真实 SQL 里脱敏、检索调试与指标编译命中、
+知识样例收录、评测任务跑完、会话回放、审计留痕、语义层编辑、普通用户看不到管理入口且 API 返回 403。
 覆盖新增的 tool-calling 循环（假模型注入）、语义层、列级 linking、trace、记忆、MCP 握手、eval 冒烟。
 
 | 组 | 覆盖内容 |
@@ -808,6 +883,13 @@ text2sql-agent/
 │   │   ├── auth.py            # HMAC token / 登录限流 / token 撤销
 │   │   ├── llm.py             # OpenAI 兼容客户端 + 主备链路 + SQL 提取
 │   │   ├── knowledge.py       # 文件知识库（sql/rules）加载与召回
+│   │   ├── prompts.py         # 提示词版本管理（system_append/insight/guard）
+│   │   ├── audit.py           # 配置审计（append-only）
+│   │   ├── config_admin.py    # 在线配置中心（白名单改 .env + 热生效）
+│   │   ├── alerts.py          # 告警规则与 SLO
+│   │   ├── monitor.py         # 趋势 / 用量成本 / 失败分布 / 索引状态
+│   │   ├── policy.py          # 只读合规策略（禁写词 + 敏感列脱敏）
+│   │   ├── evaluation.py      # 评测任务（子进程隔离 + 历史 + A/B）
 │   │   ├── embedding.py       # 向量模型客户端 + 伪向量（Mock）
 │   │   ├── config.py          # 全部配置，只从 .env 读
 │   │   └── models.py          # 请求体校验
@@ -817,12 +899,14 @@ text2sql-agent/
 │   │   ├── build_index.py     # 构建向量索引
 │   │   ├── build_meta_pg.py   # Postgres 内省 → schema_meta.json
 │   │   ├── eval.py            # golden / BIRD 执行准确率评测
-│   │   └── selftest.py        # 150 项全链路自测
-│   ├── semantic/metrics.yaml  # 受治理指标层（唯一真相）
+│   │   └── selftest.py        # 178 项全链路自测
+│   ├── semantic/metrics.yaml  # 受治理指标层（唯一真相，可在线编辑）
+│   ├── alerts.yaml           # 告警规则（可在线编辑）
+│   ├── policy.yaml           # 只读合规策略（可在线编辑）
 │   ├── mcp_server.py          # MCP stdio server（只读工具）
 │   └── data/                  # 运行期生成（.gitignore）
 ├── frontend/src/              # Vue 3 源码
-│   └── components/            # ResultPanel / SchemaPanel / SqlBlock / AdminPanel
+│   └── components/            # ResultPanel / SchemaPanel / SqlBlock / AdminPanel / TrendChart
 ├── deploy/                    # systemd / nginx / 隧道 / 证书 / 上线脚本
 ├── knowledge/                 # 可审计文件知识库（sql/ + rules/）
 ├── eval/

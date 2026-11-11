@@ -57,6 +57,21 @@ TOOL_SPECS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "get_metric_sql",
+            "description": (
+                "取受治理指标的编译结果：表达式、有效过滤、涉及表。"
+                "命中指标时优先照抄它给出的表达式，不要自己另起口径。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"metric_id": {"type": "string"}},
+                "required": ["metric_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "submit_result",
             "description": (
                 "提交最终答案对应的 SQL。只有 submit_result 提交的 SQL 结果会展示给用户。"
@@ -155,6 +170,14 @@ async def _dispatch(ctx: ToolContext, name: str, args: dict) -> dict:
                        for t in tables],
             "context": ctx.idx.prompt_context(names, colmap),
         }
+
+    if name == "get_metric_sql":
+        mid = str(args.get("metric_id") or "").strip()
+        c = semantic.compiled_metric(mid)
+        if not c:
+            return {"ok": False, "error": f"没有这个指标：{mid}",
+                    "available": [m.get("id") for m in semantic.metrics()]}
+        return {"ok": True, "metric": c}
 
     if name == "run_sql":
         if ctx.sql_count >= settings.MAX_TOOL_SQL:
