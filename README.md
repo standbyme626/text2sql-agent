@@ -777,6 +777,8 @@ MOCK_MODE=true .venv/bin/python backend/scripts/selftest.py
 **178 项断言**，跑在独立临时数据目录上，不碰开发库、不消耗外部额度，结束自动清理；
 告警规则、合规策略、`.env`、语义层、提示词全部指向临时副本，自测不会写脏线上文件。
 
+端到端脚本在 `backend/scripts/e2e_admin.cjs`（真实浏览器点击 + 真实 API，跑隔离实例）。
+
 此外有 **30 项端到端**（浏览器真实点击，隔离实例）：14 个管理屏逐屏渲染、在线改配置并热生效、
 告警规则保存、提示词版本生效、合规策略生效、敏感列在真实 SQL 里脱敏、检索调试与指标编译命中、
 知识样例收录、评测任务跑完、会话回放、审计留痕、语义层编辑、普通用户看不到管理入口且 API 返回 403。
@@ -899,6 +901,7 @@ text2sql-agent/
 │   │   ├── build_index.py     # 构建向量索引
 │   │   ├── build_meta_pg.py   # Postgres 内省 → schema_meta.json
 │   │   ├── eval.py            # golden / BIRD 执行准确率评测
+│   │   ├── e2e_admin.cjs      # 管理后台端到端（14 屏 + 全部写路径）
 │   │   └── selftest.py        # 178 项全链路自测
 │   ├── semantic/metrics.yaml  # 受治理指标层（唯一真相，可在线编辑）
 │   ├── alerts.yaml           # 告警规则（可在线编辑）
