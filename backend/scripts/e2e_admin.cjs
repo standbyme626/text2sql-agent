@@ -182,8 +182,14 @@ function check(name, cond, extra = '') {
   await page.click('.adm-nav:has-text("会话回放")');
   await page.waitForTimeout(1000);
   const session = await page.$('.adm-screen.on .adm-list-card');
-  if (session) { await session.click(); await page.waitForTimeout(1200); }
-  check('会话回放可打开详情', !!(await page.$('.adm-screen.on .adm-list-card')));
+  if (session) {
+    await session.click();
+    await page.waitForTimeout(1200);
+    check('会话回放可打开详情', !!(await page.$('.adm-screen.on .adm-msg, .adm-screen.on .adm-empty')));
+  } else {
+    // 全新实例没有会话：应显示空态而不是空白
+    check('会话回放显示空态', (await page.textContent('.adm-screen.on .adm-empty')) !== null);
+  }
 
   // ---------- 配置审计 ----------
   await page.click('.adm-nav:has-text("配置审计")');

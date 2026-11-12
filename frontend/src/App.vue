@@ -164,7 +164,8 @@
       <SchemaPanel v-if="showSchema" :tables="meta?.tables || []" @close="showSchema = false" />
     </div>
 
-    <AdminPanel v-else :status="status" :health="health" @toast="showToast" @open-chat="switchView('chat')" />
+    <AdminPanel v-else :status="status" :health="health" @toast="showToast"
+                  @open-chat="switchView('chat')" @logout="logout" />
 
     <div class="drawer-mask" v-if="menuOpen || showSchema" @click="closeDrawers"></div>
     <div class="toast" v-if="toastText">{{ toastText }}</div>

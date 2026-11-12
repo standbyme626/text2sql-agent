@@ -42,7 +42,7 @@
           </div>
         </div>
 
-        <div class="adm-grid" style="grid-template-columns:1.55fr 1fr;margin-bottom:14px;align-items:start">
+        <div class="adm-grid adm-cols-main">
           <div class="adm-card adm-pad">
             <div class="adm-between" style="margin-bottom:12px">
               <div class="adm-h2" style="margin:0">近 14 天调用趋势</div>
@@ -80,7 +80,7 @@
           </div>
         </div>
 
-        <div class="adm-grid" style="grid-template-columns:1fr 1fr 1fr;margin-bottom:14px;align-items:start">
+        <div class="adm-grid adm-cols-3">
           <div class="adm-card adm-pad">
             <div class="adm-between" style="margin-bottom:8px">
               <div class="adm-h2" style="margin:0">模型用量与成本</div>
@@ -187,7 +187,7 @@
                       <option value="rose">rose</option><option value="amber">amber</option><option value="info">info</option>
                     </select>
                   </td>
-                  <td><input type="checkbox" v-model="r.enabled" /></td>
+                  <td><label class="adm-check"><input type="checkbox" v-model="r.enabled" /><span class="sr-only">启用 {{ r.name }}</span></label></td>
                 </tr>
               </tbody>
             </table>
@@ -406,7 +406,7 @@
           </div>
         </div>
 
-        <div class="adm-grid" style="grid-template-columns:300px 1fr;align-items:start">
+        <div class="adm-grid adm-cols-split">
           <div class="adm-card adm-scroll" style="max-height:70vh">
             <div v-for="s in sessions" :key="s.session_id" class="adm-list-card"
                  style="cursor:pointer" @click="openSession(s.session_id)">
@@ -499,7 +499,9 @@
                 <span v-if="it.restart" class="adm-badge amber" style="margin-left:6px">需重启</span>
               </label>
               <div class="adm-row" style="gap:8px">
-                <input v-if="it.kind === 'bool'" type="checkbox" v-model="configDraft[it.key]" />
+                <label v-if="it.kind === 'bool'" class="adm-check">
+                  <input type="checkbox" v-model="configDraft[it.key]" />
+                </label>
                 <select v-else-if="it.kind === 'enum'" class="adm-input" v-model="configDraft[it.key]">
                   <option v-for="o in it.options" :key="o" :value="o">{{ o }}</option>
                 </select>
@@ -544,7 +546,7 @@
               <textarea class="adm-area" rows="6" v-model="promptForm.body"
                         placeholder="【团队口径】统计有效成交时排除 cancelled / refunded 订单"></textarea>
             </div>
-            <label class="adm-tiny adm-muted" style="display:block;margin-bottom:8px">
+            <label class="adm-check adm-check-text adm-tiny adm-muted">
               <input type="checkbox" v-model="promptForm.activate" /> 保存后立即生效
             </label>
             <button class="adm-btn primary" :disabled="saving || promptForm.body.length < 5" @click="savePrompt">
@@ -929,7 +931,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import TrendChart from './TrendChart.vue'
 
-const emit = defineEmits(['toast', 'open-chat'])
+const emit = defineEmits(['toast', 'open-chat', 'logout'])
 const tab = ref('overview')
 
 const overview = ref(null)
